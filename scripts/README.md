@@ -108,7 +108,10 @@ mixture, pinned Hugging Face revision, and sampling method.
 The job defaults to 4 CPUs and 32 GiB RAM, with explicit `gpuCount: 0`.
 Beaker requires a placement constraint when mounting Weka, so submission discovers
 all clusters tagged `storage:weka`, filters user and workspace-budget restrictions,
-and allows the complete eligible list. There is no single-cluster default.
+and allows the complete eligible list. If Beaker rejects a cluster because the
+workspace lacks a required allocation, that cluster is removed before resubmitting
+the rejected request. This does not retry ambiguous outcomes or create duplicate jobs.
+There is no single-cluster default.
 Offline `--dry-run` uses an explicit placeholder for this dynamically resolved list.
 Use `--cluster` only to restrict placement explicitly.
 A complete download/sample is reused.

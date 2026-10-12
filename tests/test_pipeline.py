@@ -50,6 +50,30 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
+def test_download_excludes_only_explicit_allocation_rejections(tmp_path):
+    from types import SimpleNamespace
+    from beaker.exceptions import BeakerError
+    args = args_for('download-data', '--spec-file', str(tmp_path / 'spec.json'))
+    spec = submit.make_spec(args, resolved_clusters=['ai2/holmes', 'ai2/phobos', 'ai2/jupiter'])
+    calls = []
+    def create(**kwargs):
+        clusters = kwargs['spec'].to_json()['tasks'][0]['constraints']['cluster']
+        calls.append(clusters[:])
+        if 'ai2/holmes' in clusters:
+            raise BeakerError('[code=422] task "main": cluster "ai2/holmes" requires an allocation '
+                              'for workloads with a minimum runtime, and workspace lacks one')
+        return 'created'
+    client = SimpleNamespace(experiment=SimpleNamespace(create=create))
+    assert submit.create_experiment(client, args, None, 'test', spec) == 'created'
+    assert calls == [['ai2/holmes', 'ai2/phobos', 'ai2/jupiter'], ['ai2/phobos', 'ai2/jupiter']]
+    assert json.loads(args.spec_file.read_text())['tasks'][0]['resources']['gpuCount'] == 0
+    def uncertain(**kwargs):
+        raise BeakerError('[code=503] unknown submission outcome')
+    client.experiment.create = uncertain
+    with pytest.raises(BeakerError, match='unknown submission outcome'):
+        submit.create_experiment(client, args, None, 'test', spec)
+
+
 def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split):
     args = args_for('train-model', '--root', str(tmp_path), '--vocab-size', str(vocab))
     raw = pipeline.raw_file(args)

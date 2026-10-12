@@ -141,6 +141,31 @@ def save_spec(spec, destination):
         destination.write_text(json.dumps(spec, indent=2) + '\n')
 
 
+def create_experiment(beaker, args, workspace, name, spec):
+    from beaker import BeakerExperimentSpec
+    from beaker.exceptions import BeakerError
+    import re
+    while True:
+        save_spec(spec, args.spec_file)
+        try:
+            return beaker.experiment.create(name=name, workspace=workspace,
+                                           spec=BeakerExperimentSpec.from_json(copy.deepcopy(spec)))
+        except BeakerError as error:
+            # Budget membership alone does not imply an allocation at every
+            # level. A 422 rejects the whole submission before creating a job.
+            # Remove only the cluster explicitly identified as inaccessible to
+            # this non-preemptible workload; never retry ambiguous outcomes here.
+            rejected = re.search(r'\[code=422\].*cluster "([^"]+)" requires an allocation '
+                                 r'for workloads with a minimum runtime', str(error))
+            clusters = spec['tasks'][0]['constraints']['cluster']
+            if args.stage != 'download-data' or args.cluster or not rejected or rejected[1] not in clusters:
+                raise
+            clusters.remove(rejected[1])
+            print(f'Excluded {rejected[1]}: workspace lacks the required allocation', flush=True)
+            if not clusters:
+                raise ValueError('No Weka clusters permit this workload with its current allocation') from error
+
+
 def main():
     p = parser()
     args = p.parse_args()
@@ -196,9 +221,7 @@ def main():
             spec = make_spec(args, dataset.id, revision, resolved_clusters)
             if hostnames:
                 spec['tasks'][0]['constraints']['hostname'] = hostnames
-            save_spec(spec, args.spec_file)
-            workload = b.experiment.create(name=name, workspace=workspace,
-                                          spec=BeakerExperimentSpec.from_json(copy.deepcopy(spec)))
+            workload = create_experiment(b, args, workspace, name, spec)
             if args.receipt:
                 from pipeline import write_json
                 write_json(args.receipt, {'workload_id': workload.experiment.id,
