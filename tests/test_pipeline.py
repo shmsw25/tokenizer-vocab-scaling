@@ -28,7 +28,11 @@ def test_beaker_resources_and_schema(stage):
     expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
     assert task['resources']['gpuCount'] == expected_gpus
     if stage == 'download-data':
-        assert not task.get('constraints', {}).get('cluster')
+        assert args.cluster is None
+        assert task['constraints']['cluster'] == [submit.WEKA_CLUSTERS_PLACEHOLDER]
+        resolved = submit.make_spec(args, resolved_clusters=['ai2/ceres', 'ai2/phobos'])
+        assert resolved['tasks'][0]['constraints']['cluster'] == ['ai2/ceres', 'ai2/phobos']
+        assert resolved['tasks'][0]['resources']['gpuCount'] == 0
     else:
         assert task['constraints']['cluster'] == ['ai2/jupiter' if expected_gpus else 'ai2/phobos']
     assert task['datasets'][1] == {

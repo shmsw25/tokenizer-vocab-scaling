@@ -14,6 +14,7 @@ from pipeline import REPO, STAGES, MODEL_STAGES, add_stage_arguments, validate_a
 # Existing ai2/flex2 image, verified by Beaker image lookup on 2026-10-12.
 GPU_IMAGE = '01KAXVQ0YN242MQ9YEQDQQK512'  # tylerr/olmo-core-tch280cu128-2025-11-25
 CPU_IMAGE = 'python:3.12-slim-bookworm'
+WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
 RESOURCES = {
     'download-data': (4, '32 GiB'),
     'train-tokenizer': (64, '128 GiB'),
@@ -70,7 +71,27 @@ def stage_arguments(args):
     return result
 
 
-def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD'):
+def discover_weka_clusters(beaker, workspace):
+    """Beaker requires explicit constraints for Weka; discover them from live access metadata."""
+    from google.protobuf.json_format import MessageToDict
+    user_id = beaker.user.get().id
+    budget_id = MessageToDict(workspace).get('budgetId')
+    eligible = []
+    for cluster in beaker.cluster.list(org=workspace.owner_org):
+        info = MessageToDict(cluster)
+        if 'storage:weka' not in info.get('tags', []) or not info.get('nodeCount', 0):
+            continue
+        if info.get('userRestrictions') and user_id not in info['userRestrictions']:
+            continue
+        if info.get('budgetRestrictions') and budget_id not in info['budgetRestrictions']:
+            continue
+        eligible.append(f'{cluster.organization_name}/{cluster.name}')
+    if not eligible:
+        raise ValueError('No accessible Weka clusters found for this account/workspace')
+    return sorted(eligible)
+
+
+def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', resolved_clusters=None):
     requested_gpus = gpu_count(args)
     gpu_job = requested_gpus > 0
     env = {
@@ -102,9 +123,9 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD'):
             'resources': {'cpuCount': args.cpus, 'memory': args.memory,
                           'gpuCount': requested_gpus,
                           'sharedMemory': '8 GiB' if gpu_job else '1 GiB'},
-            # Weka mount eligibility is enforced by Beaker. Without an explicit
-            # override the download is free to run on any accessible Weka cluster.
-            **({'constraints': {'cluster': [args.cluster]}} if args.cluster else {}),
+            # Offline previews use a named placeholder; real submissions resolve
+            # every accessible Weka cluster rather than pinning a single cluster.
+            'constraints': {'cluster': resolved_clusters or [args.cluster or WEKA_CLUSTERS_PLACEHOLDER]},
             'context': {'priority': args.priority, 'preemptible': args.preemptible},
         }],
     }
@@ -154,6 +175,7 @@ def main():
         with Beaker.from_env(default_workspace=args.workspace, check_for_upgrades=False) as b:
             workspace = b.workspace.get(args.workspace)
             cluster = b.cluster.get(args.cluster) if args.cluster else None
+            resolved_clusters = [args.cluster] if cluster else discover_weka_clusters(b, workspace)
             hostnames = None
             if args.stage in MODEL_STAGES:
                 b.image.get(args.image)
@@ -171,7 +193,7 @@ def main():
                 workspace=workspace, strip_paths=True,
                 description=f'shmsw25/tokenizer-vocab-scaling source at {revision}',
             )
-            spec = make_spec(args, dataset.id, revision)
+            spec = make_spec(args, dataset.id, revision, resolved_clusters)
             if hostnames:
                 spec['tasks'][0]['constraints']['hostname'] = hostnames
             save_spec(spec, args.spec_file)

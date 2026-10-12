@@ -105,9 +105,12 @@ quota. Both raw versions are retained, so allow more than 350GB of raw storage,
 plus tokenized streams and checkpoints. See `../data/README.md` for the source
 mixture, pinned Hugging Face revision, and sampling method.
 
-The job defaults to 4 CPUs and 32 GiB RAM, with explicit `gpuCount: 0` and no
-cluster constraint. Its Weka mount requirement and Beaker's access controls
-determine eligible clusters. Use `--cluster` only to restrict placement explicitly.
+The job defaults to 4 CPUs and 32 GiB RAM, with explicit `gpuCount: 0`.
+Beaker requires a placement constraint when mounting Weka, so submission discovers
+all clusters tagged `storage:weka`, filters user and workspace-budget restrictions,
+and allows the complete eligible list. There is no single-cluster default.
+Offline `--dry-run` uses an explicit placeholder for this dynamically resolved list.
+Use `--cluster` only to restrict placement explicitly.
 A complete download/sample is reused.
 Downloading can resume a valid `.part` file. Sampling refuses an existing `.part`
 file; after a failed sampling attempt, inspect it and move it aside before
