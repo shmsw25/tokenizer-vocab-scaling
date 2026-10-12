@@ -25,7 +25,7 @@ def test_beaker_resources_and_schema(stage):
     parsed = BeakerExperimentSpec.from_json(copy.deepcopy(spec)).to_json()
     task = parsed['tasks'][0]
     assert task['resources']['gpuCount'] == (8 if stage == 'train-model' else 0)
-    assert task['constraints']['cluster'] == ['ai2/jupiter']
+    assert task['constraints']['cluster'] == ['ai2/jupiter' if stage == 'train-model' else 'ai2/phobos']
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]

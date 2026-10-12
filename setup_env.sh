@@ -4,13 +4,13 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 mode="${1:-all}"
 case "$mode" in
-    cpu) python -m pip install -r scripts/requirements-cpu.txt ;;
+    cpu) python -m pip install -r requirements-cpu.txt ;;
     train|all)
         python scripts/verify_emo.py
         python -m pip install -r requirements.txt
         python -m pip install -e './EMO[wandb]'
         if [[ "$mode" == all ]]; then
-            python -m pip install -r scripts/requirements-launch.txt
+            python -m pip install -r requirements-launch.txt
         fi
         ;;
     *) echo "Usage: $0 [cpu|train|all]" >&2; exit 2 ;;

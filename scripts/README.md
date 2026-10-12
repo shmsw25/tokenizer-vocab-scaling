@@ -1,6 +1,6 @@
 # Jupiter / Weka / Beaker pipeline
 
-These scripts submit **one stage per Beaker experiment** to `ai2/jupiter` in
+These scripts submit **one stage per Beaker experiment** to CPU-only `ai2/phobos` or H100 `ai2/jupiter` in
 `ai2/flex2`. Downloading/sampling, tokenizer training, and tokenization request
 **zero GPUs**. Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
 wait for each prerequisite experiment to **succeed** before submitting its next
@@ -22,7 +22,7 @@ source .venv/bin/activate
 ```
 
 For submission alone, Python 3.10+ and
-`python -m pip install -r scripts/requirements-launch.txt` suffice. The wrappers
+`python -m pip install -r requirements-launch.txt` suffice. The wrappers
 use `.venv/bin/python` if present, or `python3`; set `PYTHON` to override it.
 Beaker authentication uses the existing `~/.beaker/config.yml`, or the
 `BEAKER_TOKEN` environment variable. The Beaker CLI is not required. Never
@@ -30,7 +30,7 @@ commit tokens. The dataset is public; `--hf-token-secret SECRET_NAME` is an
 optional way to supply a workspace Beaker secret as `HF_TOKEN` to a job.
 
 CPU jobs use the `python:3.12-slim-bookworm` Docker image and install only
-`scripts/requirements-cpu.txt`, with no PyTorch or CUDA dependency. Training
+`requirements-cpu.txt`, with no PyTorch or CUDA dependency. Training
 uses Beaker image `01KAXVQ0YN242MQ9YEQDQQK512`
 (`tylerr/olmo-core-tch280cu128-2025-11-25`) plus the local patched EMO package.
 Job environments are isolated in an ephemeral virtual environment; large data
@@ -191,7 +191,8 @@ Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Priority defaults to `normal`;
 jobs are non-preemptible unless `--preemptible` is supplied. CPU scripts expose
 no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
-constrain placement to H100 nodes in the requested cluster. GPU training is single-node;
+constrain placement to H100 nodes in the requested cluster. Jupiter uses whole GPU slots even for `gpuCount: 0`, so CPU jobs instead use
+Phobos and reject GPU-cluster overrides. GPU training is single-node;
 `--gpus` is GPUs on that node.
 
 ## Validation

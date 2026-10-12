@@ -29,7 +29,8 @@ def parser():
         s = sub.add_parser(stage)
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
-        s.add_argument('--cluster', default=os.environ.get('BEAKER_CLUSTER', 'ai2/jupiter'))
+        s.add_argument('--cluster', default=os.environ.get('BEAKER_CLUSTER',
+                       'ai2/jupiter' if stage == 'train-model' else 'ai2/phobos'))
         s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'), default='normal')
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
@@ -130,26 +131,27 @@ def main():
     # Parse before any upload/launch. The SDK consumes its input dictionary.
     BeakerExperimentSpec.from_json(copy.deepcopy(spec))
     name = args.name or f'tokenizer-{args.stage}-{uuid.uuid4().hex[:12]}'
-    with Beaker.from_env(default_workspace=args.workspace, check_for_upgrades=False) as b:
-        # Read-only checks precede the source upload.
-        workspace = b.workspace.get(args.workspace)
-        cluster = b.cluster.get(args.cluster)
-        hostnames = None
-        if args.stage == 'train-model':
-            b.image.get(args.image)
-            from google.protobuf.json_format import MessageToDict
-            hostnames = [n.hostname for n in b.node.list(cluster=cluster)
-                         if MessageToDict(n).get('nodeResources', {}).get('gpuType')
-                         == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= args.gpus]
-            if not hostnames:
-                raise RuntimeError('No qualifying H100 nodes in the requested cluster')
-        with tempfile.TemporaryDirectory(prefix='tokenizer-source-') as temporary:
-            folder = Path(temporary)
-            archive = folder / 'repo.tar.gz'
-            subprocess.run(['git', '-C', str(REPO), 'archive', '--format=tar.gz',
-                            f'--output={archive}', revision], check=True)
-            bootstrap = folder / 'bootstrap.sh'
-            bootstrap.write_text(git('show', f'{revision}:scripts/bootstrap.sh') + '\n')
+    with tempfile.TemporaryDirectory(prefix='tokenizer-source-') as temporary:
+        folder = Path(temporary)
+        archive = folder / 'repo.tar.gz'
+        subprocess.run(['git', '-C', str(REPO), 'archive', '--format=tar.gz',
+                        f'--output={archive}', revision], check=True)
+        bootstrap = folder / 'bootstrap.sh'
+        bootstrap.write_text(git('show', f'{revision}:scripts/bootstrap.sh') + '\n')
+        with Beaker.from_env(default_workspace=args.workspace, check_for_upgrades=False) as b:
+            workspace = b.workspace.get(args.workspace)
+            cluster = b.cluster.get(args.cluster)
+            hostnames = None
+            if args.stage == 'train-model':
+                b.image.get(args.image)
+                from google.protobuf.json_format import MessageToDict
+                hostnames = [n.hostname for n in b.node.list(cluster=cluster)
+                             if MessageToDict(n).get('nodeResources', {}).get('gpuType')
+                             == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= args.gpus]
+                if not hostnames:
+                    raise RuntimeError('No qualifying H100 nodes in the requested cluster')
+            elif cluster.node_shape.gpu_count:
+                raise ValueError('CPU stages require a CPU-only cluster to avoid reserving GPU slots')
             dataset = b.dataset.create(
                 f'tokenizer-code-{revision[:12]}-{uuid.uuid4().hex[:8]}', archive, bootstrap,
                 workspace=workspace, strip_paths=True,
@@ -161,14 +163,15 @@ def main():
             save_spec(spec, args.spec_file)
             workload = b.experiment.create(name=name, workspace=workspace,
                                           spec=BeakerExperimentSpec.from_json(copy.deepcopy(spec)))
-        if args.receipt:
-            from pipeline import write_json
-            write_json(args.receipt, {'workload_id': workload.id, 'experiment_id': workload.experiment.id,
-                       'url': b.experiment.url(workload), 'code_dataset_id': dataset.id,
-                       'revision': revision, 'name': name})
-        print(b.experiment.url(workload))
-        print(f'Code dataset: {dataset.id} (retain for reproducibility)')
-        print('Run the next stage only after this experiment succeeds.')
+            if args.receipt:
+                from pipeline import write_json
+                write_json(args.receipt, {'workload_id': workload.experiment.id,
+                           'experiment_id': workload.experiment.id,
+                           'url': b.experiment.url(workload), 'code_dataset_id': dataset.id,
+                           'revision': revision, 'name': name})
+            print(b.experiment.url(workload))
+            print(f'Code dataset: {dataset.id} (retain for reproducibility)')
+            print('Run the next stage only after this experiment succeeds.')
 
 
 if __name__ == '__main__':
