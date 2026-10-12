@@ -1,8 +1,12 @@
 # Jupiter / Weka / Beaker pipeline
 
-These scripts submit **one stage per Beaker experiment** to CPU-only `ai2/phobos` or H100 `ai2/jupiter` in
-`ai2/flex2`. Downloading/sampling, tokenizer training, and tokenization request
-**zero GPUs**. Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
+These scripts submit **one stage per Beaker experiment** in `ai2/flex2`.
+Download/sample jobs can run on **any accessible cluster with Weka access**;
+other CPU stages use `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
+Downloading/sampling, tokenizer training, and tokenization explicitly request
+**zero GPUs**. Beaker may reserve a GPU slot for a zero-GPU download on GPU
+clusters; the campaign records this reservation, while CUDA remains disabled.
+Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
 wait for each prerequisite experiment to **succeed** before submitting its next
 stage. No experiment is submitted by setup or by `--dry-run`.
 
@@ -101,7 +105,10 @@ quota. Both raw versions are retained, so allow more than 350GB of raw storage,
 plus tokenized streams and checkpoints. See `../data/README.md` for the source
 mixture, pinned Hugging Face revision, and sampling method.
 
-The job defaults to 4 CPUs and 32 GiB RAM. A complete download/sample is reused.
+The job defaults to 4 CPUs and 32 GiB RAM, with explicit `gpuCount: 0` and no
+cluster constraint. Its Weka mount requirement and Beaker's access controls
+determine eligible clusters. Use `--cluster` only to restrict placement explicitly.
+A complete download/sample is reused.
 Downloading can resume a valid `.part` file. Sampling refuses an existing `.part`
 file; after a failed sampling attempt, inspect it and move it aside before
 rerunning. A truncated download line also requires inspection before resuming.
@@ -245,8 +252,11 @@ Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Priority defaults to `normal`;
 jobs are non-preemptible unless `--preemptible` is supplied. CPU scripts expose
 no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
-constrain placement to H100 nodes in the requested cluster. Jupiter uses whole GPU slots even for `gpuCount: 0`, so CPU jobs instead use
-Phobos and reject GPU-cluster overrides. GPU training is single-node;
+constrain placement to H100 nodes in the requested cluster. GPU clusters use
+whole GPU slots even for `gpuCount: 0`. The download permits this scheduler
+reservation to broaden placement; the monitor reports requested and assigned
+counts separately. Other CPU stages use Phobos and reject GPU-cluster overrides.
+GPU training is single-node;
 `--gpus` is GPUs on that node.
 
 ## Validation

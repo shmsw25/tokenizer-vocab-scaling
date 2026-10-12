@@ -27,7 +27,10 @@ def test_beaker_resources_and_schema(stage):
     task = parsed['tasks'][0]
     expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
     assert task['resources']['gpuCount'] == expected_gpus
-    assert task['constraints']['cluster'] == ['ai2/jupiter' if expected_gpus else 'ai2/phobos']
+    if stage == 'download-data':
+        assert not task.get('constraints', {}).get('cluster')
+    else:
+        assert task['constraints']['cluster'] == ['ai2/jupiter' if expected_gpus else 'ai2/phobos']
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]

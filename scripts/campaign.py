@@ -120,14 +120,25 @@ def refresh(state, folder):
                 detail = MessageToDict(job)
                 node['job_id'] = job.id
                 node['job_status'] = detail.get('status', {})
-                assignment = detail.get('assignmentDetails', {}).get('resourceAssignment')
+                assigned_details = detail.get('assignmentDetails', {})
+                assignment = assigned_details.get('resourceAssignment')
+                node['hostname'] = next((entry.get('literal') for entry in
+                                         assigned_details.get('assignedEnvironmentVariables', [])
+                                         if entry['name'] == 'BEAKER_NODE_HOSTNAME'), None)
                 if assignment is not None:
                     node['assignment'] = assignment
                     # The serialized protobuf omits the empty list for zero GPUs.
                     assigned_gpus = len(assignment.get('gpus', []))
                     node['assigned_gpus'] = assigned_gpus
-                    if assigned_gpus != node['expected_gpus']:
+                    if node['stage'] == 'download-data' and assigned_gpus:
+                        # The user accepts scheduler-imposed GPU reservations for
+                        # this CPU workload so it can use any Weka cluster.
+                        node['resource_warning'] = (f'Requested 0 GPUs; Beaker reserved {assigned_gpus}. '
+                                                    'Download remains CPU-only.')
+                    elif assigned_gpus != node['expected_gpus']:
                         raise RuntimeError(f"Expected {node['expected_gpus']} GPUs, assigned {assigned_gpus}")
+                    else:
+                        node.pop('resource_warning', None)
                 lines = [{'timestamp': line.timestamp.ToJsonString(),
                           'message': line.message.decode(errors='replace')}
                          for line in b.job.logs(job, tail_lines=160, follow=False)]
@@ -190,7 +201,7 @@ def retry_node(state, key):
         raise ValueError('Already attempted three times; investigate before creating a new campaign')
     history.append({k: node[k] for k in ('receipt', 'job_status', 'progress') if k in node})
     for field in ('receipt', 'job_id', 'job_status', 'progress', 'assignment', 'assigned_gpus',
-                  'monitor_error', 'submission_error', 'summary'):
+                  'monitor_error', 'submission_error', 'summary', 'resource_warning', 'hostname'):
         node.pop(field, None)
     node['status'] = 'pending'
     node['name'] = f"{state['campaign']}-{key.replace('_', '-')}-retry{len(history)}"
@@ -216,6 +227,8 @@ def render_report(state, destination):
             detail = 'After ' + ', '.join(node['dependencies'])
         else:
             detail = error or progress.get('text', '')
+        if node.get('resource_warning'):
+            detail += ' ' + node['resource_warning']
         eta = 'Complete' if node['status'] == 'succeeded' else progress.get('eta', 'Awaiting prerequisites')
         rows.append(f'<tr><td>{label}</td><td>{escape(node["status"])}</td>'
                     f'<td>{node["expected_gpus"]} / {escape(node.get("assigned_gpus", "—"))}</td>'
@@ -315,7 +328,8 @@ def main():
         print(json.dumps({'checked_at': state.get('checked_at'), 'complete': state['complete'],
                           'counts': counts, 'report': str(report),
                           'active': {key: {field: node[field] for field in
-                                     ('status', 'progress', 'monitor_error', 'submission_error', 'receipt') if field in node}
+                                     ('status', 'progress', 'hostname', 'assigned_gpus', 'resource_warning',
+                                      'monitor_error', 'submission_error', 'receipt') if field in node}
                                      for key, node in state['nodes'].items() if node['status'] not in {'pending', 'succeeded'}}}, indent=2))
 
 
