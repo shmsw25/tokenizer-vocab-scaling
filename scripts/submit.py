@@ -81,6 +81,8 @@ def discover_weka_clusters(beaker, workspace):
         info = MessageToDict(cluster)
         if 'storage:weka' not in info.get('tags', []) or not info.get('nodeCount', 0):
             continue
+        if info.get('maxTaskTimeout') == '0s':
+            continue  # session-only cluster; it rejects batch tasks
         if info.get('userRestrictions') and user_id not in info['userRestrictions']:
             continue
         if info.get('budgetRestrictions') and budget_id not in info['budgetRestrictions']:
@@ -155,13 +157,14 @@ def create_experiment(beaker, args, workspace, name, spec):
             # level. A 422 rejects the whole submission before creating a job.
             # Remove only the cluster explicitly identified as inaccessible to
             # this non-preemptible workload; never retry ambiguous outcomes here.
-            rejected = re.search(r'\[code=422\].*cluster "([^"]+)" requires an allocation '
-                                 r'for workloads with a minimum runtime', str(error))
+            rejected = (re.search(r'\[code=422\].*cluster "([^"]+)" requires an allocation '
+                                  r'for workloads with a minimum runtime', str(error)) or
+                        re.fullmatch(r'task "[^"]+": cluster "([^"]+)" doesn\'t allow tasks', str(error)))
             clusters = spec['tasks'][0]['constraints']['cluster']
             if args.stage != 'download-data' or args.cluster or not rejected or rejected[1] not in clusters:
                 raise
             clusters.remove(rejected[1])
-            print(f'Excluded {rejected[1]}: workspace lacks the required allocation', flush=True)
+            print(f'Excluded {rejected[1]}: {error}', flush=True)
             if not clusters:
                 raise ValueError('No Weka clusters permit this workload with its current allocation') from error
 
