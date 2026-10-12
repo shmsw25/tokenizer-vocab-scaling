@@ -67,7 +67,7 @@ document order, so all tokenizers see the same train and eval documents.
 ## 3. Train
 
 ```bash
-torchrun --standalone --nproc_per_node=2 train.py \
+torchrun --standalone --nproc_per_node=8 train.py \
     --config configs/small.json --data-dir tokenized/32000 --output-dir runs/small_32k
 ```
 
@@ -79,23 +79,27 @@ same command resumes from the last checkpoint in `--output-dir`.
 |---|---:|---:|---|---:|
 | `configs/small.json` | 12 | 512 | about 67M / 83M / 116M | 3e-4 |
 | `configs/medium.json` | 16 | 1024 | about 301M / 334M / 399M | 1e-4 |
-| `configs/olmo2_1b.json` | 16 | 2048 | 1,139M / 1,205M / 1,336M | 1e-4 |
+| `configs/medium_large.json` | 16 | 2048 | 1,139M / 1,205M / 1,336M | 1e-4 |
+
+The fixed warmup matches the infinite-compute project: 24,576 sequences, or
+96 steps at global batch 256. Warmup, decay, and epoch/step budget are recorded
+in the config and omitted from the readable output directory name.
 
 All configs use tied embeddings, sequence length 4096, AdamW with weight decay
-0.1, 3% linear warm-up, constant learning rate, linear decay to zero over the
+0.1, 96-step linear warm-up, constant learning rate, linear decay to zero over the
 last 10% of steps, BF16 autocast, and one epoch.
 
 ### Batch size
 
 Sequences per optimizer step = `micro_batch_size` x number of GPUs x
-`gradient_accumulation_steps`. The configs give 128 sequences per step on two
-GPUs, which is 524,288 tokens at sequence length 4096. Keep that product at 128
+`gradient_accumulation_steps`. The configs give 256 sequences per step on eight
+GPUs, which is 1,048,576 tokens at sequence length 4096. Keep that product at 256
 when changing the GPU count:
 
 ```bash
 # four GPUs, small model
 torchrun --standalone --nproc_per_node=4 train.py --config configs/small.json \
-    --micro-batch-size 32 --gradient-accumulation-steps 1 ...
+    --micro-batch-size 32 --gradient-accumulation-steps 2 ...
 ```
 
 `micro_batch_size` is what has to fit in GPU memory. On 141 GB H200 GPUs the
@@ -110,13 +114,13 @@ text per sequence. To give every model the same amount of text per sequence
 instead, name the reference tokenizer's directory:
 
 ```bash
-torchrun --standalone --nproc_per_node=2 train.py \
+torchrun --standalone --nproc_per_node=8 train.py \
     --config configs/small.json --data-dir tokenized/128000 --output-dir runs/small_128k_matched \
     --match-context-of tokenized/32000
 ```
 
 This sets `seq_length = 4096 x tokens_per_byte(128k) / tokens_per_byte(32k)`,
-rounded. The batch stays at 128 sequences per step, so every model also sees the
+rounded. The batch stays at 256 sequences per step, so every model also sees the
 same number of bytes per step. `--seq-length N` sets it by hand. The value used
 is printed at start-up and saved in each checkpoint's `config.json`.
 

@@ -14,6 +14,9 @@ import sys
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
 REFERENCE_VOCAB = 32000
+# Infinite-compute recipe: 24 steps at a global batch of 1024 sequences.
+WARMUP_SEQUENCES = 24 * 1024
+MODEL_MICROBATCHES = {'small': 32, 'medium': 16, 'medium_large': 8}
 STAGES = ('download-data', 'train-tokenizer', 'tokenize-data', 'train-model')
 
 
@@ -38,9 +41,10 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--data-size', choices=('100GB', '250GB'), default='100GB')
     if stage == 'train-model':
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
-        parser.add_argument('--gpus', type=positive_int, default=1)
-        parser.add_argument('--micro-batch-size', type=positive_int, default=1)
-        parser.add_argument('--batch-size', type=positive_int, default=128,
+        parser.add_argument('--gpus', type=positive_int, default=8)
+        parser.add_argument('--micro-batch-size', type=positive_int,
+                            help='Per-GPU sequences; defaults to 32/16/8 by model size')
+        parser.add_argument('--batch-size', type=positive_int, default=256,
                             help='Global sequences per optimizer step, independent of GPU count')
         parser.add_argument('--learning-rate', type=positive_float)
         parser.add_argument('--weight-decay', type=float)
@@ -63,6 +67,10 @@ def validate_args(args):
             raise ValueError('--model-size must be a config name, without directories')
         if not (REPO / 'configs' / f'{args.model_size}.json').is_file():
             raise ValueError(f'Missing configs/{args.model_size}.json')
+        if args.micro_batch_size is None:
+            args.micro_batch_size = MODEL_MICROBATCHES[args.model_size]
+        if WARMUP_SEQUENCES % args.batch_size:
+            raise ValueError('--batch-size must divide 24576 to preserve the fixed warmup')
         if args.batch_size % (args.gpus * args.micro_batch_size):
             raise ValueError('--batch-size must be divisible by --gpus * --micro-batch-size')
         if args.weight_decay is not None and (not math.isfinite(args.weight_decay) or args.weight_decay < 0):
@@ -207,6 +215,7 @@ def tokenize_data(args):
 
 
 def training_plan(args):
+    validate_args(args)
     data = tokenized_dir(args)
     reference = tokenized_dir(args, REFERENCE_VOCAB)
     meta = completed_meta(data, args.vocab_size)
@@ -246,10 +255,11 @@ def training_plan(args):
         t['weight_decay'] = args.weight_decay
     if args.no_compile:
         t['compile'] = False
-    # train.py constructs WSD directly; no scheduler override is accepted.
-    if not (0 <= t['warmup_fraction'] < 1 and 0 < t['decay_fraction'] <= 1
-            and t['warmup_fraction'] + t['decay_fraction'] <= 1):
-        raise ValueError('Invalid WSD warmup/decay fractions')
+    # Fixed data warmup from infinite-compute; context matching also matches bytes.
+    t.pop('warmup_fraction', None)
+    t['warmup_steps'] = WARMUP_SEQUENCES // args.batch_size
+    t['decay_fraction'] = 0.1
+    t['decay_min_lr'] = 0.0
     cfg['pipeline'] = {
         'scheduler': 'WSD', 'reference_vocab_size': REFERENCE_VOCAB,
         'reference_sequence_length': 4096, 'reference_tokens_per_byte': baseline['tokens_per_byte'],
@@ -258,10 +268,8 @@ def training_plan(args):
         'raw': raw_signature(raw_file(args)),
     }
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
-    budget = f'steps{args.max_steps}' if args.max_steps else f'e{args.epochs}'
     run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
-                f'seq{seq}_{budget}_seed{args.seed}_wu{t["warmup_fraction"]:g}_'
-                f'decay{t["decay_fraction"]:g}_{fingerprint}')
+                f'seq{seq}_seed{args.seed}_{fingerprint}')
     output = args.root / 'models' / args.model_size / dataset_name(args) / run_name
     return cfg, output
 

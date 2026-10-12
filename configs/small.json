@@ -16,7 +16,6 @@
     "micro_batch_size": 32,
     "learning_rate": 0.0003,
     "weight_decay": 0.1,
-    "warmup_fraction": 0.03,
     "decay_fraction": 0.1,
     "decay_min_lr": 0.0,
     "compile": true,
@@ -26,6 +25,7 @@
     "num_workers": 2,
     "report_to": "none",
     "seed": 42,
-    "gradient_accumulation_steps": 2
+    "gradient_accumulation_steps": 1,
+    "warmup_steps": 96
   }
 }

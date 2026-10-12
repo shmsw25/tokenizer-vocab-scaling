@@ -18,7 +18,7 @@ RESOURCES = {
     'download-data': (4, '32 GiB'),
     'train-tokenizer': (64, '128 GiB'),
     'tokenize-data': (16, '64 GiB'),
-    'train-model': (8, '64 GiB'),
+    'train-model': (32, '256 GiB'),
 }
 
 
@@ -40,6 +40,7 @@ def parser():
         s.add_argument('--hf-token-secret', help='Optional Beaker secret name to expose as HF_TOKEN')
         s.add_argument('--dry-run', action='store_true', help='Print JSON; no upload or job submission')
         s.add_argument('--spec-file', type=Path, help='Also save the generated JSON spec')
+        s.add_argument('--receipt', type=Path, help='Save the submitted workload IDs as JSON')
     return p
 
 
@@ -132,9 +133,16 @@ def main():
     with Beaker.from_env(default_workspace=args.workspace, check_for_upgrades=False) as b:
         # Read-only checks precede the source upload.
         workspace = b.workspace.get(args.workspace)
-        b.cluster.get(args.cluster)
+        cluster = b.cluster.get(args.cluster)
+        hostnames = None
         if args.stage == 'train-model':
             b.image.get(args.image)
+            from google.protobuf.json_format import MessageToDict
+            hostnames = [n.hostname for n in b.node.list(cluster=cluster)
+                         if MessageToDict(n).get('nodeResources', {}).get('gpuType')
+                         == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= args.gpus]
+            if not hostnames:
+                raise RuntimeError('No qualifying H100 nodes in the requested cluster')
         with tempfile.TemporaryDirectory(prefix='tokenizer-source-') as temporary:
             folder = Path(temporary)
             archive = folder / 'repo.tar.gz'
@@ -148,9 +156,16 @@ def main():
                 description=f'shmsw25/tokenizer-vocab-scaling source at {revision}',
             )
             spec = make_spec(args, dataset.id, revision)
+            if hostnames:
+                spec['tasks'][0]['constraints']['hostname'] = hostnames
             save_spec(spec, args.spec_file)
             workload = b.experiment.create(name=name, workspace=workspace,
                                           spec=BeakerExperimentSpec.from_json(copy.deepcopy(spec)))
+        if args.receipt:
+            from pipeline import write_json
+            write_json(args.receipt, {'workload_id': workload.id, 'experiment_id': workload.experiment.id,
+                       'url': b.experiment.url(workload), 'code_dataset_id': dataset.id,
+                       'revision': revision, 'name': name})
         print(b.experiment.url(workload))
         print(f'Code dataset: {dataset.id} (retain for reproducibility)')
         print('Run the next stage only after this experiment succeeds.')

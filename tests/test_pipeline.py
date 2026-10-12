@@ -24,7 +24,7 @@ def test_beaker_resources_and_schema(stage):
     spec = submit.make_spec(args)
     parsed = BeakerExperimentSpec.from_json(copy.deepcopy(spec)).to_json()
     task = parsed['tasks'][0]
-    assert task['resources']['gpuCount'] == (1 if stage == 'train-model' else 0)
+    assert task['resources']['gpuCount'] == (8 if stage == 'train-model' else 0)
     assert task['constraints']['cluster'] == ['ai2/jupiter']
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
@@ -64,19 +64,22 @@ def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split):
 
 
 def test_scaled_context_fixed_batch_and_output(tmp_path):
-    make_meta_fixture(tmp_path, 32000, 0.5, 2_000_000)
-    args = make_meta_fixture(tmp_path, 48000, 0.4, 2_000_000)
+    make_meta_fixture(tmp_path, 32000, 0.5, 4_000_000)
+    args = make_meta_fixture(tmp_path, 48000, 0.4, 4_000_000)
     cfg, output = pipeline.training_plan(args)
     assert cfg['seq_length'] == round(4096 * 0.4 / 0.5)
     assert cfg['pipeline']['scheduler'] == 'WSD'
-    assert cfg['training']['gradient_accumulation_steps'] == 128
+    assert cfg['training']['gradient_accumulation_steps'] == 1
+    assert cfg['training']['warmup_steps'] == 96
+    assert 'warmup_fraction' not in cfg['training']
+    assert '_wu' not in output.name and '_decay' not in output.name and '_e1_' not in output.name
     assert output.parent == tmp_path / 'models/small/default_100GB_48000'
-    assert 'lr0.0003_wd0.1_bs128_seq3277_e1_seed42' in output.name
+    assert 'lr0.0003_wd0.1_bs256_seq3277_seed42' in output.name
     args.learning_rate = 0.002
     assert pipeline.training_plan(args)[1] != output
     args.gpus = 2
     cfg, _ = pipeline.training_plan(args)
-    assert cfg['training']['gradient_accumulation_steps'] == 64
+    assert cfg['training']['gradient_accumulation_steps'] == 4
     meta_path = pipeline.tokenized_dir(args, 32000) / 'meta.json'
     meta = pipeline.read_json(meta_path)
     meta['train']['bytes'] += 1
@@ -86,7 +89,7 @@ def test_scaled_context_fixed_batch_and_output(tmp_path):
 
 
 def test_missing_reference_fails(tmp_path):
-    args = make_meta_fixture(tmp_path, 48000, 0.4, 2_000_000)
+    args = make_meta_fixture(tmp_path, 48000, 0.4, 4_000_000)
     with pytest.raises(FileNotFoundError, match='default_100GB_32000'):
         pipeline.training_plan(args)
 
@@ -126,8 +129,8 @@ def test_wsd_and_patched_embeddings():
     from olmo_core.optim import WSD
     from olmo_core.nn.attention import AttentionBackendName
     from olmo_core.nn.transformer import TransformerConfig
-    scheduler = WSD(warmup_fraction=0.03, decay_fraction=0.1, decay_min_lr=0.0)
-    assert scheduler.get_lr(0.001, 15, 1000) == pytest.approx(0.0005)
+    scheduler = WSD(warmup=96, decay_fraction=0.1, decay_min_lr=0.0)
+    assert scheduler.get_lr(0.001, 48, 1000) == pytest.approx(0.0005)
     assert scheduler.get_lr(0.001, 500, 1000) == pytest.approx(0.001)
     assert scheduler.get_lr(0.001, 950, 1000) == pytest.approx(0.0005)
     assert scheduler.get_lr(0.001, 1000, 1000) == pytest.approx(0)

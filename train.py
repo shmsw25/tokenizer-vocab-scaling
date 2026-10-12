@@ -113,7 +113,7 @@ def main():
             rank_microbatch_size=t['micro_batch_size'] * seq_length,
             max_sequence_length=seq_length,
             optim=AdamWConfig(lr=t['learning_rate'], weight_decay=t['weight_decay'], fused=True),
-            scheduler=WSD(warmup_fraction=t['warmup_fraction'],
+            scheduler=WSD(warmup=t['warmup_steps'],
                           decay_fraction=t['decay_fraction'], decay_min_lr=t['decay_min_lr']),
             max_grad_norm=1.0, compile_model=t['compile'],
             autocast_precision=DType.bfloat16)

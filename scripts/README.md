@@ -2,7 +2,7 @@
 
 These scripts submit **one stage per Beaker experiment** to `ai2/jupiter` in
 `ai2/flex2`. Downloading/sampling, tokenizer training, and tokenization request
-**zero GPUs**. Model training defaults to **one GPU**. Submission is asynchronous:
+**zero GPUs**. Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
 wait for each prerequisite experiment to **succeed** before submitting its next
 stage. No experiment is submitted by setup or by `--dry-run`.
 
@@ -56,7 +56,7 @@ tokenizer_project/
     meta.json
     pipeline.json
   models/<model_size>/default_100GB_<vocab_size>/
-    wsd_lr<lr>_wd<wd>_bs<batch>_seq<length>_<budget>_seed<seed>_wu<warmup>_decay<decay>_<hash>/
+    wsd_lr<lr>_wd<wd>_bs<batch>_seq<length>_seed<seed>_<hash>/
 ```
 
 All vocabulary-dependent stages default to `--data-size 100GB`. The optional
@@ -64,7 +64,7 @@ All vocabulary-dependent stages default to `--data-size 100GB`. The optional
 a 32k reference tokenized from that same 250GB corpus. `--root` may override the
 project directory, but Beaker submissions require it to stay inside the Weka
 mount. Model config names currently available are `small`, `medium`, and
-`olmo2_1b`. A new size such as `medium_large` can be added as
+`medium_large`. A new size such as `medium_large` can be added as
 `configs/medium_large.json` without editing any script.
 
 ## Review a job before launching
@@ -147,13 +147,15 @@ After target and 32k tokenization both succeed:
 ```bash
 scripts/submit_train_model.sh --vocab-size "$VOCAB_SIZE" --model-size small
 
-# Example override; still 128 global sequences per optimizer step:
-scripts/submit_train_model.sh --vocab-size "$VOCAB_SIZE" --model-size olmo2_1b \
-  --gpus 2 --micro-batch-size 1 --batch-size 128 --learning-rate 1e-4
+# Example override; still 256 global sequences per optimizer step:
+scripts/submit_train_model.sh --vocab-size "$VOCAB_SIZE" --model-size medium_large \
+  --gpus 8 --micro-batch-size 8 --batch-size 256 --learning-rate 1e-4
 ```
 
-Every run uses WSD: linear warmup (config default 3%), stable LR, then linear
-decay (default last 10%) to zero. The trainer instantiates `olmo_core.optim.WSD`
+Every run uses WSD: a fixed linear warmup, stable LR, then linear
+decay (default last 10%) to zero. Warmup follows the infinite-compute recipe: `24 * 1024 = 24576` sequences,
+which is exactly 96 optimizer steps at batch 256, independent of corpus size
+and vocabulary. Warmup is not a fraction of the run. The trainer instantiates `olmo_core.optim.WSD`
 directly; the launcher exposes no alternative scheduler. The context is always
 
 ```text
@@ -165,10 +167,11 @@ per document. The job validates corpus/split agreement and token file sizes,
 then writes the resolved `launch_config.json` before invoking `torchrun`.
 There is no sequence-length override in these submission scripts.
 
-The default is one epoch, 128 global sequences per optimizer step, and one
-sequence per GPU microbatch. Gradient accumulation is computed as
-`batch_size / (gpus * micro_batch_size)` and must be integral. A small fixed
-microbatch avoids vocabulary-specific tuning; increase it if memory allows.
+The default is one epoch and 256 global sequences per optimizer step on eight
+H100 GPUs. Per-GPU microbatches are 32 (`small`), 16 (`medium`), and 8
+(`medium_large`), with 1, 2, and 4 accumulation steps respectively. Gradient accumulation is computed as
+`batch_size / (gpus * micro_batch_size)` and must be integral. These settings come from the corresponding model sizes in the infinite-compute
+project; they are fixed across vocabulary sizes.
 Per-GPU memory still depends on model and vocabulary size, so arbitrary large
 values are not guaranteed to fit. LR and weight decay default to the selected
 model config. Other controls are `--learning-rate`, `--weight-decay`, `--epochs`,
@@ -187,7 +190,8 @@ Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 `--priority`, `--image`, and `--name`. Workspace and cluster can also default
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Priority defaults to `normal`;
 jobs are non-preemptible unless `--preemptible` is supplied. CPU scripts expose
-no GPU-count flag and always emit `gpuCount: 0`. GPU training is single-node;
+no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
+constrain placement to H100 nodes in the requested cluster. GPU training is single-node;
 `--gpus` is GPUs on that node.
 
 ## Validation
@@ -206,3 +210,8 @@ embedding identity. On the local macOS Conda Python, `readline` crashes during
 pytest capture initialization; `-p no:capture` avoids that interpreter issue.
 GPU execution and the full 250GB download need a subsequent Beaker run; neither
 is performed by the validation tests.
+
+The readable model path omits warmup, decay, and training budget (epoch/step
+limit). All remain recorded in the configuration; its hash distinguishes
+otherwise conflicting runs. `medium_large` is the renamed original 1B model,
+with no architecture change.
