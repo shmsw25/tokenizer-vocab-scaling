@@ -1,0 +1,95 @@
+# claude
+.claude/
+CLAUDE.md
+
+# build artifacts
+
+.eggs/
+.mypy_cache
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+private/
+tmp/
+
+# dev tools
+
+.envrc
+.python-version
+.idea
+.venv/
+.vscode/
+.cursor/
+/*.iml
+pyrightconfig.json
+.ruff.toml
+uv.lock
+
+
+# jupyter notebooks
+
+.ipynb_checkpoints
+
+
+# miscellaneous
+
+.cache/
+doc/_build/
+*.swp
+.DS_Store
+
+
+# python
+
+*.pyc
+*.pyo
+__pycache__
+
+
+# testing and continuous integration
+
+.coverage
+.pytest_cache/
+.benchmarks
+
+# documentation build artifacts
+
+docs/build
+site/
+
+# runs
+/runs/
+/wandb/
+/scratch/
+core
+/dataset-cache/
+/data/
+cached_results.pkl
+src/scripts/kevinf/data/get_data_sources.py
+src/scripts/kevinf/test_env.py
+docs/kevinf-branch-changes.md
+docs/env-setup-guide.md
+DockerFile
+evals/
+s3_sync.sh
+prune_evals
+prune_evals_0311_backup
+prune_evals_0313
+eval_visualizer
+*.png
+transformers
+src/offline_evals/data/synthea
+/models/
+prune
+claude_outputs
+eval_plots/.mplconfig
+*.csv
+*.html
+prune_evals_final
+extension_evals_0414
+extension_evals_hf
+plotting_env/
+extension_evals_hf_0426
+AI2_Colors.pdf
+paper.pdf

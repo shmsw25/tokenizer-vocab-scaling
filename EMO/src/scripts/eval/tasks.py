@@ -1,0 +1,2083 @@
+from typing import Any
+
+from oe_eval.configs.tasks import TASK_CONFIGS
+from oe_eval.data.mmlu_tasks import MMLU_SUBJECTS
+
+from offline_evals.tasks.code_fresh import CODE_FRESH_LANGUAGES
+from src.offline_evals.tasks.splits_mmlu import (
+    MMLU_CLUSTER_CATEGORIES,
+    MMLU_CLUSTER_CATEGORIES_ALL,
+    MMLU_CLUSTER_CATEGORIES_L0,
+    MMLU_CLUSTER_CATEGORIES_L15,
+)
+from src.offline_evals.tasks.splits_mmlu_pro import MMLU_PRO_CATEGORIES_MAP
+
+
+def get_task_configs():
+    TASK_CONFIGS.update(
+        {
+            "squad_0shot:train::olmes": {
+                "task_name": "squad_0shot:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_0shot:validation::olmes": {
+                "task_name": "squad_0shot:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_0shot:test::olmes": {
+                "task_name": "squad_0shot:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_merged:train::olmes": {
+                "task_name": "squad_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:squad",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_merged:validation::olmes": {
+                "task_name": "squad_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:squad",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_merged:test::olmes": {
+                "task_name": "squad_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:squad",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_0shot_merged:train::olmes": {
+                "task_name": "squad_0shot_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_0shot_merged:validation::olmes": {
+                "task_name": "squad_0shot_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "squad_0shot_merged:test::olmes": {
+                "task_name": "squad_0shot_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                    "reduced_spacing": True,
+                    "description": "The following are reading comprehension questions, where the answer to each question is a segment of text from the corresponding background text.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "naturalqs_merged:train::olmes": {
+                "task_name": "naturalqs_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:naturalqs",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "naturalqs_merged:validation::olmes": {
+                "task_name": "naturalqs_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:naturalqs",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "naturalqs_merged:test::olmes": {
+                "task_name": "naturalqs_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:naturalqs",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "triviaqa_merged:train::olmes": {
+                "task_name": "triviaqa_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:triviaqa",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "triviaqa_merged:validation::olmes": {
+                "task_name": "triviaqa_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:triviaqa",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "triviaqa_merged:test::olmes": {
+                "task_name": "triviaqa_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:triviaqa",
+                "generation_kwargs": {
+                    "max_gen_toks": 50,
+                },
+                "context_kwargs": {
+                    "short_prefix": False,
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "drop_merged:train::olmes": {
+                "task_name": "drop_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:drop",
+                "generation_kwargs": {
+                    "max_gen_toks": 100,
+                },
+                "context_kwargs": {
+                    "description": "The following are reading comprehension questions, where the answer to each question is either a segment of text from the corresponding passage, a number, or a date (containing any of the date, month, and/or year components). Some questions may require you to pull together information pieces from the passage and reason over them.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "drop_merged:validation::olmes": {
+                "task_name": "drop_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:drop",
+                "generation_kwargs": {
+                    "max_gen_toks": 100,
+                },
+                "context_kwargs": {
+                    "description": "The following are reading comprehension questions, where the answer to each question is either a segment of text from the corresponding passage, a number, or a date (containing any of the date, month, and/or year components). Some questions may require you to pull together information pieces from the passage and reason over them.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "drop_merged:test::olmes": {
+                "task_name": "drop_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:drop",
+                "generation_kwargs": {
+                    "max_gen_toks": 100,
+                },
+                "context_kwargs": {
+                    "description": "The following are reading comprehension questions, where the answer to each question is either a segment of text from the corresponding passage, a number, or a date (containing any of the date, month, and/or year components). Some questions may require you to pull together information pieces from the passage and reason over them.\n\n",
+                },
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_full_0shot:train::olmes": {
+                "task_name": "coqa_full_0shot:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_full_0shot:validation::olmes": {
+                "task_name": "coqa_full_0shot:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_full_0shot:test::olmes": {
+                "task_name": "coqa_full_0shot:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_0shot:train::olmes": {
+                "task_name": "coqa_0shot:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_0shot:validation::olmes": {
+                "task_name": "coqa_0shot:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_0shot:test::olmes": {
+                "task_name": "coqa_0shot:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_merged:train::olmes": {
+                "task_name": "coqa_merged:train",
+                "split": "train",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_merged:validation::olmes": {
+                "task_name": "coqa_merged:validation",
+                "split": "validation",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "coqa_merged:test::olmes": {
+                "task_name": "coqa_merged:test",
+                "split": "test",
+                "primary_metric": "f1",
+                "num_shots": 0,
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_0shot:train::olmes": {
+                "task_name": "gsm8k_generation_0shot:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_0shot:validation::olmes": {
+                "task_name": "gsm8k_generation_0shot:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_0shot:test::olmes": {
+                "task_name": "gsm8k_generation_0shot:test",
+                "split": "test",
+                "primary_metric": "exact_match",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot:train::olmes": {
+                "task_name": "gsm8k_generation_8shot:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot:validation::olmes": {
+                "task_name": "gsm8k_generation_8shot:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot:test::olmes": {
+                "task_name": "gsm8k_generation_8shot:test",
+                "split": "test",
+                "primary_metric": "exact_match",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            # Merged variants: pruning + finetuning use the same train+val merged set.
+            "gsm8k_generation_0shot_merged:train::olmes": {
+                "task_name": "gsm8k_generation_0shot_merged:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_0shot_merged:validation::olmes": {
+                "task_name": "gsm8k_generation_0shot_merged:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_0shot_merged:test::olmes": {
+                "task_name": "gsm8k_generation_0shot_merged:test",
+                "split": "test",
+                "primary_metric": "exact_match",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot_merged:train::olmes": {
+                "task_name": "gsm8k_generation_8shot_merged:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot_merged:validation::olmes": {
+                "task_name": "gsm8k_generation_8shot_merged:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_generation_8shot_merged:test::olmes": {
+                "task_name": "gsm8k_generation_8shot_merged:test",
+                "split": "test",
+                "primary_metric": "exact_match",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "synthea:rc_train_0shot::olmes": {
+                "task_name": "synthea:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "metadata": {
+                    "description": "synthea train using OLMES-v0.1",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "synthea:rc_validation_0shot::olmes": {
+                "task_name": "synthea:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "limit": 1000,
+                "num_shots": 0,
+                "metadata": {
+                    "description": "synthea train using OLMES-v0.1",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "synthea:rc_test_0shot::olmes": {
+                "task_name": "synthea:rc_test_0shot",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "limit": 1000,
+                "num_shots": 0,
+                "metadata": {
+                    "description": "synthea train using OLMES-v0.1",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "synthea:rc_train::olmes": {
+                "task_name": "synthea:rc_train",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "metadata": {
+                    "description": "ARC-Easy (RC) test using OLMES-v0.1, on test split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "synthea:rc_validation::olmes": {
+                "task_name": "synthea:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "limit": 1000,
+                "metadata": {
+                    "description": "ARC-Easy (RC) test using OLMES-v0.1, on test split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "synthea:rc_test::olmes": {
+                "task_name": "synthea:rc_test",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "limit": 1000,
+                "metadata": {
+                    "description": "ARC-Easy (RC) test using OLMES-v0.1, on test split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "gsm8k_perplexity:train::olmes": {
+                "task_name": "gsm8k_perplexity:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_perplexity:validation::olmes": {
+                "task_name": "gsm8k_perplexity:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_perplexity:test::olmes": {
+                "task_name": "gsm8k_perplexity:test",
+                "split": "test",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 8,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_perplexity_0shot:train::olmes": {
+                "task_name": "gsm8k_perplexity_0shot:train",
+                "split": "train",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_perplexity_0shot:validation::olmes": {
+                "task_name": "gsm8k_perplexity_0shot:validation",
+                "split": "validation",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "gsm8k_perplexity_0shot:test::olmes": {
+                "task_name": "gsm8k_perplexity_0shot:test",
+                "split": "test",
+                "primary_metric": "bits_per_byte",
+                "num_shots": 0,
+                "fewshot_source": "STD:GSM8k",
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "hellaswag:mc_train::olmes": {
+                "task_name": "hellaswag:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:mc_validation::olmes": {
+                "task_name": "hellaswag:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:mc_test::olmes": {
+                "task_name": "hellaswag:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:rc_train::olmes": {
+                "task_name": "hellaswag:rc_train",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:rc_validation::olmes": {
+                "task_name": "hellaswag:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:rc_train_0shot::olmes": {
+                "task_name": "hellaswag:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:rc_validation_0shot::olmes": {
+                "task_name": "hellaswag:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "hellaswag:rc_test::olmes": {
+                "task_name": "hellaswag:rc_test",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:hellaswag",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            # HellaSwag merged (train+val combined for pruning+finetuning)
+            **{
+                f"hellaswag_merged:rc_{split}::olmes": {
+                    "task_name": f"hellaswag_merged:rc_{split}",
+                    "split": split,
+                    "primary_metric": "acc_per_char",
+                    "num_shots": 5,
+                    "fewshot_source": "OLMES:hellaswag",
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                for split in ["train", "validation", "test"]
+            },
+            # HellaSwag per-cluster: legacy k=6 aliases + k-prefixed for all k values
+            **{
+                f"hellaswag_cluster_{c}:rc_{split}::olmes": {
+                    "task_name": f"hellaswag_cluster_{c}:rc_{split}",
+                    "split": split,
+                    "primary_metric": "acc_per_char",
+                    "num_shots": 5,
+                    "fewshot_source": "OLMES:hellaswag",
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                for c in range(6)
+                for split in ["train", "validation", "test"]
+            },
+            **{
+                f"hellaswag_cluster_merged_{c}:rc_{split}::olmes": {
+                    "task_name": f"hellaswag_cluster_merged_{c}:rc_{split}",
+                    "split": split,
+                    "primary_metric": "acc_per_char",
+                    "num_shots": 5,
+                    "fewshot_source": "OLMES:hellaswag",
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                for c in range(6)
+                for split in ["train", "validation", "test"]
+            },
+            **{
+                f"hellaswag_k{k}_cluster_{c}:rc_{split}::olmes": {
+                    "task_name": f"hellaswag_k{k}_cluster_{c}:rc_{split}",
+                    "split": split,
+                    "primary_metric": "acc_per_char",
+                    "num_shots": 5,
+                    "fewshot_source": "OLMES:hellaswag",
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                for k in [6, 8, 10, 16]
+                for c in range(k)
+                for split in ["train", "validation", "test"]
+            },
+            **{
+                f"hellaswag_k{k}_cluster_merged_{c}:rc_{split}::olmes": {
+                    "task_name": f"hellaswag_k{k}_cluster_merged_{c}:rc_{split}",
+                    "split": split,
+                    "primary_metric": "acc_per_char",
+                    "num_shots": 5,
+                    "fewshot_source": "OLMES:hellaswag",
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                for k in [6, 8, 10, 16]
+                for c in range(k)
+                for split in ["train", "validation", "test"]
+            },
+            "winogrande:mc_train::olmes": {
+                "task_name": "winogrande:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:mc_validation::olmes": {
+                "task_name": "winogrande:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:mc_test::olmes": {
+                "task_name": "winogrande:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:rc_train::olmes": {
+                "task_name": "winogrande:rc_train",
+                "split": "train",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:rc_validation::olmes": {
+                "task_name": "winogrande:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:rc_train_0shot::olmes": {
+                "task_name": "winogrande:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_raw",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:rc_validation_0shot::olmes": {
+                "task_name": "winogrande:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_raw",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "winogrande:rc_test::olmes": {
+                "task_name": "winogrande:rc_test",
+                "split": "test",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:winogrande",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:mc_train::olmes": {
+                "task_name": "socialiqa:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:mc_validation::olmes": {
+                "task_name": "socialiqa:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:mc_test::olmes": {
+                "task_name": "socialiqa:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:rc_train::olmes": {
+                "task_name": "socialiqa:rc_train",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:rc_validation::olmes": {
+                "task_name": "socialiqa:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:rc_train_0shot::olmes": {
+                "task_name": "socialiqa:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:rc_validation_0shot::olmes": {
+                "task_name": "socialiqa:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "socialiqa:rc_test::olmes": {
+                "task_name": "socialiqa:rc_test",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:social_i_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:mc_train::olmes": {
+                "task_name": "piqa:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:mc_validation::olmes": {
+                "task_name": "piqa:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:mc_test::olmes": {
+                "task_name": "piqa:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:rc_train::olmes": {
+                "task_name": "piqa:rc_train",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:rc_validation::olmes": {
+                "task_name": "piqa:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:rc_train_0shot::olmes": {
+                "task_name": "piqa:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:rc_validation_0shot::olmes": {
+                "task_name": "piqa:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "piqa:rc_test::olmes": {
+                "task_name": "piqa:rc_test",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:piqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:mc_train::olmes": {
+                "task_name": "openbookqa:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:mc_validation::olmes": {
+                "task_name": "openbookqa:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:mc_test::olmes": {
+                "task_name": "openbookqa:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:rc_train::olmes": {
+                "task_name": "openbookqa:rc_train",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:rc_validation::olmes": {
+                "task_name": "openbookqa:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:rc_train_0shot::olmes": {
+                "task_name": "openbookqa:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:rc_validation_0shot::olmes": {
+                "task_name": "openbookqa:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "openbookqa:rc_test::olmes": {
+                "task_name": "openbookqa:rc_test",
+                "split": "test",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:openbookqa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:mc_train::olmes": {
+                "task_name": "csqa:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:mc_validation::olmes": {
+                "task_name": "csqa:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:mc_test::olmes": {
+                "task_name": "csqa:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:rc_train::olmes": {
+                "task_name": "csqa:rc_train",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:rc_validation::olmes": {
+                "task_name": "csqa:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:rc_train_0shot::olmes": {
+                "task_name": "csqa:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:rc_validation_0shot::olmes": {
+                "task_name": "csqa:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "csqa:rc_test::olmes": {
+                "task_name": "csqa:rc_test",
+                "split": "test",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:commonsense_qa",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:mc_train::olmes": {
+                "task_name": "boolq:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:mc_validation::olmes": {
+                "task_name": "boolq:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:mc_test::olmes": {
+                "task_name": "boolq:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:rc_train::olmes": {
+                "task_name": "boolq:rc_train",
+                "split": "train",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:rc_validation::olmes": {
+                "task_name": "boolq:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:rc_train_0shot::olmes": {
+                "task_name": "boolq:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_raw",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:rc_validation_0shot::olmes": {
+                "task_name": "boolq:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_raw",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "boolq:rc_test::olmes": {
+                "task_name": "boolq:rc_test",
+                "split": "test",
+                "primary_metric": "acc_raw",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:BoolQ",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:rc_train::olmes": {
+                "task_name": "arc_challenge:rc_train",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:rc_validation::olmes": {
+                "task_name": "arc_challenge:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:rc_train_0shot::olmes": {
+                "task_name": "arc_challenge:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:rc_validation_0shot::olmes": {
+                "task_name": "arc_challenge:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_uncond",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:rc_test::olmes": {
+                "task_name": "arc_challenge:rc_test",
+                "split": "test",
+                "primary_metric": "acc_uncond",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:mc_train::olmes": {
+                "task_name": "arc_challenge:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:mc_validation::olmes": {
+                "task_name": "arc_challenge:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_challenge:mc_test::olmes": {
+                "task_name": "arc_challenge:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Challenge",
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:rc_train::olmes": {
+                "task_name": "arc_easy:rc_train",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (RC) train using OLMES-v0.1",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:rc_validation::olmes": {
+                "task_name": "arc_easy:rc_validation",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (RC) validation using OLMES-v0.1, on validation split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:rc_train_0shot::olmes": {
+                "task_name": "arc_easy:rc_train_0shot",
+                "split": "train",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (RC) train using OLMES-v0.1",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:rc_validation_0shot::olmes": {
+                "task_name": "arc_easy:rc_validation_0shot",
+                "split": "validation",
+                "primary_metric": "acc_per_char",
+                "num_shots": 0,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (RC) validation using OLMES-v0.1, on validation split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:rc_test::olmes": {
+                "task_name": "arc_easy:rc_test",
+                "split": "test",
+                "primary_metric": "acc_per_char",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (RC) test using OLMES-v0.1, on test split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:mc_train::olmes": {
+                "task_name": "arc_easy:mc_train",
+                "split": "train",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (MC) train using OLMES-v0.1, on training split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:mc_validation::olmes": {
+                "task_name": "arc_easy:mc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (MC) validation using OLMES-v0.1, on validation split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "arc_easy:mc_test::olmes": {
+                "task_name": "arc_easy:mc_test",
+                "split": "test",
+                "num_shots": 5,
+                "fewshot_source": "OLMES:ARC-Easy",
+                "metadata": {
+                    "description": "ARC-Easy (MC) test using OLMES-v0.1, on test split",
+                    "regimes": ["OLMES-v0.1"],
+                },
+            },
+            "mbpp::none": {
+                "task_name": "mbpp",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "assistant_prefix": "\nYou are a helpful and precise coding assistant. For every coding task, you generate clean, self-contained Python code. Below is a function that correctly solves the coding problem and passes the relevant tests:\n```python\n",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "mbpp::evalplus": {
+                "task_name": "mbpp",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "assistant_prefix": "\nBelow is a Python script with a self-contained function that solves the problem and passes corresponding tests:\n```python\n",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "repeats": 10,
+                },
+                "metadata": {
+                    "regimes": [],
+                    "pass_at_ks": [1, 10],
+                },
+            },
+            "mbppplus::none": {
+                "task_name": "mbppplus",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "assistant_prefix": "\nYou are a helpful and precise coding assistant. For every coding task, you generate clean, self-contained Python code. Below is a function that correctly solves the above problem and passes the relevant tests:\n```python\n",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "mbppplus::openinstruct": {
+                "task_name": "mbppplus",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "openinstruct",
+                    "assistant_prefix": "Here is the completed function:\n\n\n```python\n",
+                },
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.1,
+                    "repeats": 10,
+                    "stop_sequences": ["```"],
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "mbppplus::evalplus": {
+                "task_name": "mbppplus",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "assistant_prefix": "\nBelow is a Python script with a self-contained function that solves the problem and passes corresponding tests:\n```python\n",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "repeats": 10,
+                },
+                "metadata": {
+                    "regimes": [],
+                    "pass_at_ks": [1, 10],
+                },
+            },
+            "mbppplus::deepseek": {
+                "task_name": "mbppplus",
+                "primary_metric": "pass_at_1",
+                "num_shots": 3,
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "deepseek",
+                    "assistant_prefix": "\n[BEGIN]\n",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#", "\n[DONE]"],
+                },
+                "metadata": {
+                    "regimes": [],
+                    "pass_at_ks": [1, 10],
+                },
+            },
+            "bigcodebench::none": {
+                "task_name": "bigcodebench",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "complete",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "bigcodebench_hard::none": {
+                "task_name": "bigcodebench_hard",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "complete",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": ["```", '\n"""', "\nassert", "\n#"],
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "bigcodebench::tulu": {
+                "task_name": "bigcodebench",
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "instruct",
+                },
+                "metadata": {
+                    "regimes": ["Tulu"],
+                },
+            },
+            "bigcodebench_hard::tulu": {
+                "task_name": "bigcodebench_hard",
+                "use_chat_format": True,
+                "context_kwargs": {
+                    "prompt_variant": "instruct",
+                },
+                "metadata": {
+                    "regimes": ["Tulu"],
+                },
+            },
+            "codex_humaneval:temp0.1": {
+                "task_name": "codex_humaneval",
+                "primary_metric": "pass_at_1",
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.1,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "codex_humaneval:temp0.8": {
+                "task_name": "codex_humaneval",
+                "primary_metric": "pass_at_1",
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "answer_prefix": "Below is the completed function for this coding task:\n\n```python\n",
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "codex_humaneval::tulu": {
+                "task_name": "codex_humaneval",
+                "primary_metric": "pass_at_10",
+                "use_chat_format": True,
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 20,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [10],
+                },
+                "metadata": {
+                    "regimes": ["Tulu"],
+                },
+            },
+            "codex_humanevalplus:temp0.8": {
+                "task_name": "codex_humanevalplus",
+                "primary_metric": "pass_at_1",
+                "use_chat_format": False,
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 10,
+                },
+                "context_kwargs": {
+                    "prompt_variant": "evalplus",
+                    "answer_prefix": "Below is the completed function for this coding task:\n\n```python\n",
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [1, 10],
+                },
+                "metadata": {
+                    "regimes": [],
+                },
+            },
+            "codex_humanevalplus::tulu": {
+                "task_name": "codex_humanevalplus",
+                "primary_metric": "pass_at_10",
+                "use_chat_format": True,
+                "generation_kwargs": {
+                    "do_sample": True,
+                    "top_p": 0.95,
+                    "temperature": 0.8,
+                    "repeats": 20,
+                },
+                "metric_kwargs": {
+                    "pass_at_ks": [10],
+                },
+                "metadata": {
+                    "regimes": ["Tulu"],
+                },
+            },
+            "medmcqa:rc::none": {"task_name": "medmcqa", "split": "validation", "num_shots": 5},
+            "medmcqa:mc::none": {
+                "task_name": "medmcqa:mc",
+                "split": "validation",
+                "num_shots": 5,
+            },
+            "minerva_math_500::olmes": {
+                "task_name": "minerva_math_500",
+                "split": "test",
+                "num_shots": 4,
+                "fewshot_source": "Minerva:MATH:fixed",  # fix double new line within solution in example
+                "metadata": {
+                    "regimes": ["OLMES-v0.2"],
+                },
+            },
+            "mbpp:3shot:bpb::none": {
+                "task_name": "mbpp",
+                "primary_metric": "bits_per_byte_corr",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "inloop_bpb",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": [],
+                },
+                "compute_gold_bpb": True,
+                "num_shots": 3,  # like deepseek
+                "limit": 500,
+            },
+            "codex_humaneval:3shot:bpb::none": {
+                "task_name": "codex_humaneval",
+                "primary_metric": "bits_per_byte_corr",
+                "use_chat_format": False,
+                "context_kwargs": {
+                    "prompt_variant": "inloop_bpb",
+                    "answer_prefix": "",
+                },
+                "generation_kwargs": {
+                    "stop_sequences": [],
+                },
+                "chat_overrides": {
+                    "context_kwargs": {
+                        "assistant_prefix": "",
+                    },
+                },
+                "compute_gold_bpb": True,
+                "num_shots": 3,  # like deepseek
+            },
+        }
+    )
+
+    # update MMLU, MMLU_Pro categories and configs
+    MMLU_CATEGORIES = [
+        "biology",
+        "business",
+        "chemistry",
+        "computer_science",
+        "culture",
+        "economics",
+        "engineering",
+        "geography",
+        "health",
+        "history",
+        "law",
+        "math",
+        "other",
+        "philosophy_cat",
+        "physics",
+        "politics",
+        "psychology",
+    ]
+    for category in MMLU_CATEGORIES:
+        TASK_CONFIGS[f"mmlu_{category}:rc_validation::olmes"] = {
+            "task_name": f"mmlu_{category}:rc_validation",
+            "split": "validation",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": category,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{category}:rc_test::olmes"] = {
+            "task_name": f"mmlu_{category}:rc_test",
+            "split": "test",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": category,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{category}:rc_train::olmes"] = {
+            "task_name": f"mmlu_{category}:rc_train",
+            "split": "train",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": category,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+
+    # Router-clustering-based MMLU categories (16 clusters)
+    for cluster_name in MMLU_CLUSTER_CATEGORIES:
+        TASK_CONFIGS[f"mmlu_{cluster_name}:rc_validation::olmes"] = {
+            "task_name": f"mmlu_{cluster_name}:rc_validation",
+            "split": "validation",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cluster_name,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{cluster_name}:rc_test::olmes"] = {
+            "task_name": f"mmlu_{cluster_name}:rc_test",
+            "split": "test",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cluster_name,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{cluster_name}:rc_train::olmes"] = {
+            "task_name": f"mmlu_{cluster_name}:rc_train",
+            "split": "train",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cluster_name,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+
+    for sub in MMLU_SUBJECTS:
+        TASK_CONFIGS[f"mmlu_{sub}:rc_validation::olmes"] = {
+            "task_name": f"mmlu_{sub}:rc_validation",
+            "split": "validation",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{sub}:rc_test::olmes"] = {
+            "task_name": f"mmlu_{sub}:rc_test",
+            "split": "test",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_{sub}:rc_train::olmes"] = {
+            "task_name": f"mmlu_{sub}:rc_train",
+            "split": "train",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+    # MMLU-Pro categories (with custom train/validation/test splits for pruning pipeline)
+    for cat in MMLU_PRO_CATEGORIES_MAP:
+        TASK_CONFIGS[f"mmlu_pro_{cat}:rc_validation::olmes"] = {
+            "task_name": f"mmlu_pro_{cat}:rc_validation",
+            "split": "validation",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_pro_{cat}:rc_test::olmes"] = {
+            "task_name": f"mmlu_pro_{cat}:rc_test",
+            "split": "test",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_pro_{cat}:rc_train::olmes"] = {
+            "task_name": f"mmlu_pro_{cat}:rc_train",
+            "split": "train",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+
+    # MMLU-Pro merged variant (pruning and finetuning share the same data)
+    for cat in MMLU_PRO_CATEGORIES_MAP:
+        TASK_CONFIGS[f"mmlu_pro_merged_{cat}:rc_validation::olmes"] = {
+            "task_name": f"mmlu_pro_merged_{cat}:rc_validation",
+            "split": "validation",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_pro_merged_{cat}:rc_test::olmes"] = {
+            "task_name": f"mmlu_pro_merged_{cat}:rc_test",
+            "split": "test",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+        TASK_CONFIGS[f"mmlu_pro_merged_{cat}:rc_train::olmes"] = {
+            "task_name": f"mmlu_pro_merged_{cat}:rc_train",
+            "split": "train",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "category_name": cat,
+            "metadata": {
+                "regimes": ["OLMES-v0.1"],
+            },
+        }
+
+    # MMLU-Pro merged variants with different pruning validation sizes
+    for n_val in [50, 100, 200]:
+        for cat in MMLU_PRO_CATEGORIES_MAP:
+            prefix = f"mmlu_pro_merged_n{n_val}_{cat}"
+            TASK_CONFIGS[f"{prefix}:rc_validation::olmes"] = {
+                "task_name": f"{prefix}:rc_validation",
+                "split": "validation",
+                "num_shots": 5,
+                "primary_metric": "acc_per_char",
+                "category_name": cat,
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            }
+            TASK_CONFIGS[f"{prefix}:rc_test::olmes"] = {
+                "task_name": f"{prefix}:rc_test",
+                "split": "test",
+                "num_shots": 5,
+                "primary_metric": "acc_per_char",
+                "category_name": cat,
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            }
+            TASK_CONFIGS[f"{prefix}:rc_train::olmes"] = {
+                "task_name": f"{prefix}:rc_train",
+                "split": "train",
+                "num_shots": 5,
+                "primary_metric": "acc_per_char",
+                "category_name": cat,
+                "metadata": {
+                    "regimes": ["OLMES-v0.1"],
+                },
+            }
+
+    # ------------------------------------------------------------------
+    # Merged variants for the MC9 / Pattern-A/B tasks. Pruning + finetuning
+    # share the same merged train+validation data; the test split used for
+    # eval is unchanged. Each entry's primary_metric / num_shots /
+    # fewshot_source / metadata exactly matches the corresponding non-merged
+    # rc_{train,validation,test}::olmes config.
+    # ------------------------------------------------------------------
+    _MERGED_TASK_DEFAULTS: dict[str, dict[str, Any]] = {
+        "arc_easy_merged": {
+            "primary_metric": "acc_per_char",
+            "fewshot_source": "OLMES:ARC-Easy",
+            "descriptions": {
+                "train": "ARC-Easy (RC) train using OLMES-v0.1",
+                "validation": "ARC-Easy (RC) validation using OLMES-v0.1, on validation split",
+                "test": "ARC-Easy (RC) test using OLMES-v0.1, on test split",
+            },
+        },
+        "arc_challenge_merged": {
+            "primary_metric": "acc_uncond",
+            "fewshot_source": "OLMES:ARC-Challenge",
+        },
+        "boolq_merged": {
+            "primary_metric": "acc_raw",
+            "fewshot_source": "OLMES:BoolQ",
+        },
+        "csqa_merged": {
+            "primary_metric": "acc_uncond",
+            "fewshot_source": "OLMES:commonsense_qa",
+        },
+        "openbookqa_merged": {
+            "primary_metric": "acc_uncond",
+            "fewshot_source": "OLMES:openbookqa",
+        },
+        "piqa_merged": {
+            "primary_metric": "acc_per_char",
+            "fewshot_source": "OLMES:piqa",
+        },
+        "socialiqa_merged": {
+            "primary_metric": "acc_per_char",
+            "fewshot_source": "OLMES:social_i_qa",
+        },
+        "winogrande_merged": {
+            "primary_metric": "acc_raw",
+            "fewshot_source": "OLMES:winogrande",
+        },
+    }
+    for _base, _meta in _MERGED_TASK_DEFAULTS.items():
+        for _split in ["train", "validation", "test"]:
+            _metadata = {"regimes": ["OLMES-v0.1"]}
+            if "descriptions" in _meta:
+                _metadata = {
+                    "description": _meta["descriptions"][_split],
+                    "regimes": ["OLMES-v0.1"],
+                }
+            TASK_CONFIGS[f"{_base}:rc_{_split}::olmes"] = {
+                "task_name": f"{_base}:rc_{_split}",
+                "split": _split,
+                "primary_metric": _meta["primary_metric"],
+                "num_shots": 5,
+                "fewshot_source": _meta["fewshot_source"],
+                "metadata": _metadata,
+            }
+
+    # MMLU 17-category merged variants (matches mmlu_<category>:rc_*::olmes exactly)
+    for category in MMLU_CATEGORIES:
+        for _split in ["train", "validation", "test"]:
+            TASK_CONFIGS[f"mmlu_merged_{category}:rc_{_split}::olmes"] = {
+                "task_name": f"mmlu_merged_{category}:rc_{_split}",
+                "split": _split,
+                "num_shots": 5,
+                "primary_metric": "acc_per_char",
+                "category_name": category,
+                "metadata": {"regimes": ["OLMES-v0.1"]},
+            }
+
+    # Router-clustering categories (L0/L15/ALL): non-merged + merged variants
+    for cluster_dict in (
+        MMLU_CLUSTER_CATEGORIES_L0,
+        MMLU_CLUSTER_CATEGORIES_L15,
+        MMLU_CLUSTER_CATEGORIES_ALL,
+    ):
+        for cluster_name in cluster_dict:
+            for _split in ["train", "validation", "test"]:
+                TASK_CONFIGS[f"mmlu_{cluster_name}:rc_{_split}::olmes"] = {
+                    "task_name": f"mmlu_{cluster_name}:rc_{_split}",
+                    "split": _split,
+                    "num_shots": 5,
+                    "primary_metric": "acc_per_char",
+                    "category_name": cluster_name,
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+                TASK_CONFIGS[f"mmlu_merged_{cluster_name}:rc_{_split}::olmes"] = {
+                    "task_name": f"mmlu_merged_{cluster_name}:rc_{_split}",
+                    "split": _split,
+                    "num_shots": 5,
+                    "primary_metric": "acc_per_char",
+                    "category_name": cluster_name,
+                    "metadata": {"regimes": ["OLMES-v0.1"]},
+                }
+
+    # MMLU per-subject merged variants (matches mmlu_<subject>:rc_*::olmes exactly)
+    for sub in MMLU_SUBJECTS:
+        for _split in ["train", "validation", "test"]:
+            TASK_CONFIGS[f"mmlu_merged_{sub}:rc_{_split}::olmes"] = {
+                "task_name": f"mmlu_merged_{sub}:rc_{_split}",
+                "split": _split,
+                "num_shots": 5,
+                "primary_metric": "acc_per_char",
+                "metadata": {"regimes": ["OLMES-v0.1"]},
+            }
+
+    # code_fresh_rolling task configs
+    for language in CODE_FRESH_LANGUAGES:
+        TASK_CONFIGS[f"code_fresh_rolling:{language}:bpb"] = {
+            "task_name": f"code_fresh_rolling:{language}",
+            "split": "train",
+            "primary_metric": "bits_per_byte",
+        }
+        TASK_CONFIGS[f"code_fresh_rolling:{language}:ppl"] = {
+            "task_name": f"code_fresh_rolling:{language}",
+            "split": "train",
+            "primary_metric": "ppl_token",
+        }
+
+    # FrenchBench RC tasks: 0-shot and 5-shot
+    for fb_task in [
+        "frenchbench_boolq",
+        "frenchbench_arc_challenge",
+        "frenchbench_hellaswag",
+        "frenchbench_grammar_vocab_reading",
+    ]:
+        TASK_CONFIGS[f"{fb_task}:rc:0shot::olmes"] = {
+            "task_name": f"{fb_task}:rc:0shot",
+            "num_shots": 0,
+            "primary_metric": "acc_per_char",
+            "metadata": {
+                "regimes": [],
+            },
+        }
+        TASK_CONFIGS[f"{fb_task}:rc:5shot::olmes"] = {
+            "task_name": f"{fb_task}:rc:5shot",
+            "num_shots": 5,
+            "primary_metric": "acc_per_char",
+            "metadata": {
+                "regimes": [],
+            },
+        }
+
+    return TASK_CONFIGS
