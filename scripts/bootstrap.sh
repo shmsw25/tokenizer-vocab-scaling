@@ -8,6 +8,6 @@ cd "$task_dir"
 python3 -m venv --system-site-packages "$task_dir/.venv"
 source "$task_dir/.venv/bin/activate"
 mode=cpu
-[[ "$1" != train-model ]] || mode=train
+case "$1" in train-model|convert-model|evaluate-model) mode=train ;; esac
 bash setup_env.sh "$mode"
 exec python scripts/pipeline.py "$@"

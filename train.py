@@ -19,6 +19,7 @@ Uses EMO's OLMo-core training stack; checkpoints are in OLMo-core format.
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 import torch
@@ -146,7 +147,16 @@ def main():
             (output_dir / 'tokenizer.json').write_bytes((data_dir / 'tokenizer.json').read_bytes())
             print(f'seq_length={seq_length} sequences_per_step={global_batch_size} '
                   f'tokens_per_step={global_batch_size * seq_length}', flush=True)
+        started = time.monotonic()
         trainer.fit()
+        if get_rank() == 0:
+            from scripts.pipeline import write_json
+            write_json(output_dir / 'training_metrics.json', {
+                'steps': trainer.global_step, 'max_steps': trainer.max_steps,
+                'fit_seconds_this_attempt': time.monotonic() - started,
+                'parameters': sum(p.numel() for p in model.parameters()),
+                'sequence_length': seq_length, 'global_batch_size': global_batch_size,
+            })
     finally:
         teardown_training_environment()
 

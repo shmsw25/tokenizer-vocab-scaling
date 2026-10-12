@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import pipeline
 import submit
+import campaign
 from beaker import BeakerExperimentSpec
 
 
@@ -24,8 +25,9 @@ def test_beaker_resources_and_schema(stage):
     spec = submit.make_spec(args)
     parsed = BeakerExperimentSpec.from_json(copy.deepcopy(spec)).to_json()
     task = parsed['tasks'][0]
-    assert task['resources']['gpuCount'] == (8 if stage == 'train-model' else 0)
-    assert task['constraints']['cluster'] == ['ai2/jupiter' if stage == 'train-model' else 'ai2/phobos']
+    expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
+    assert task['resources']['gpuCount'] == expected_gpus
+    assert task['constraints']['cluster'] == ['ai2/jupiter' if expected_gpus else 'ai2/phobos']
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]
@@ -138,3 +140,42 @@ def test_wsd_and_patched_embeddings():
                                         tie_word_embeddings=True,
                                         attn_backend=AttentionBackendName.torch).build(init_device='cpu')
     assert model.embeddings.weight is model.lm_head.w_out.weight
+
+
+def test_campaign_dependencies_retry_and_report(tmp_path):
+    state = {'campaign': 'test', 'nodes': campaign.make_nodes([32000, 64000, 128000],
+                                                          ['small', 'medium', 'medium_large'])}
+    nodes = state['nodes']
+    assert len([n for n in nodes.values() if n['stage'] == 'train-model']) == 9
+    assert campaign.ready_nodes(state) == ['download']
+    nodes['download']['status'] = 'succeeded'
+    assert set(campaign.ready_nodes(state)) == {'bpe-32000', 'bpe-64000', 'bpe-128000'}
+    nodes['bpe-64000']['status'] = 'succeeded'
+    nodes['tokens-64000']['status'] = 'succeeded'
+    assert not any(key.startswith('train-') for key in campaign.ready_nodes(state))
+    nodes['tokens-32000']['status'] = 'succeeded'
+    assert 'train-small-64000' in campaign.ready_nodes(state)
+    nodes['train-small-64000'].update(status='failed', receipt={'workload_id': 'old'})
+    campaign.retry_node(state, 'train-small-64000')
+    assert nodes['train-small-64000']['previous_attempts'][0]['receipt']['workload_id'] == 'old'
+    assert nodes['train-small-64000']['name'].endswith('-retry1')
+    assert 'receipt' not in nodes['train-small-64000']
+    with pytest.raises(ValueError, match='confirmed failed'):
+        campaign.retry_node(state, 'train-small-64000')
+    report = tmp_path / 'report.html'
+    campaign.render_report(state, report)
+    assert not state['complete']
+    assert 'In progress' in report.read_text()
+    assert 'Dolma BPB' in report.read_text()
+
+
+def test_monitor_eta_uses_observed_progress():
+    lines = [{'timestamp': '2026-10-12T19:00:00Z',
+              'message': 'Downloaded 1,000 records, 1.000 / 250 GB of text'},
+             {'timestamp': '2026-10-12T19:01:00Z',
+              'message': 'Downloaded 2,000 records, 2.000 / 250 GB of text'}]
+    assert '~4.1 h' in campaign.log_progress(lines, 'download-data')['eta']
+    lines.append({'timestamp': '2026-10-12T19:02:00Z',
+                  'message': '[step=100/1000,epoch=1,eta=3h20m] CE loss: 3.1'})
+    progress = campaign.log_progress(lines, 'train-model')
+    assert progress['eta'] == '3h20m' and progress['step'] == 100

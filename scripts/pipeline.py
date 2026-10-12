@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
@@ -17,7 +18,9 @@ REFERENCE_VOCAB = 32000
 # Infinite-compute recipe: 24 steps at a global batch of 1024 sequences.
 WARMUP_SEQUENCES = 24 * 1024
 MODEL_MICROBATCHES = {'small': 32, 'medium': 16, 'medium_large': 8}
-STAGES = ('download-data', 'train-tokenizer', 'tokenize-data', 'train-model')
+MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
+STAGES = ('download-data', 'train-tokenizer', 'tokenize-data', *MODEL_STAGES)
+EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
 def positive_int(value):
@@ -39,7 +42,7 @@ def add_stage_arguments(parser, stage):
     if stage != 'download-data':
         parser.add_argument('--vocab-size', required=True, type=positive_int)
         parser.add_argument('--data-size', choices=('100GB', '250GB'), default='100GB')
-    if stage == 'train-model':
+    if stage in MODEL_STAGES:
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
         parser.add_argument('--gpus', type=positive_int, default=8)
         parser.add_argument('--micro-batch-size', type=positive_int,
@@ -53,6 +56,8 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--max-steps', type=positive_int,
                             help='Optional short run; overrides the epoch budget')
         parser.add_argument('--no-compile', action='store_true')
+    if stage == 'evaluate-model':
+        parser.add_argument('--evals', nargs='+', choices=EVALS, default=list(EVALS))
 
 
 def validate_args(args):
@@ -62,7 +67,7 @@ def validate_args(args):
         return
     if args.vocab_size < 257:
         raise ValueError('--vocab-size must include 256 byte symbols and EOS (at least 257)')
-    if args.stage == 'train-model':
+    if args.stage in MODEL_STAGES:
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', args.model_size):
             raise ValueError('--model-size must be a config name, without directories')
         if not (REPO / 'configs' / f'{args.model_size}.json').is_file():
@@ -287,10 +292,105 @@ def train_model(args):
             history.write(os.environ.get('TOKENIZER_CODE_REVISION', 'local') + '\n')
         print(f'Model output: {output}', flush=True)
         print(f'Scaled sequence length: {cfg["seq_length"]}', flush=True)
+        started = time.monotonic()
         run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
              f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
              '--data-dir', tokenized_dir(args), '--output-dir', output,
              '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}'])
+        checkpoint = latest_checkpoint(output)
+        write_json(output / 'training_summary.json', {
+            'model_size': args.model_size, 'vocab_size': args.vocab_size,
+            'model_dir': str(output), 'checkpoint': str(checkpoint), 'config': cfg,
+            'elapsed_seconds_this_attempt': time.monotonic() - started,
+            'training': read_json(output / 'training_metrics.json'),
+        })
+
+
+def latest_checkpoint(output):
+    checkpoints = [p for p in output.glob('step*') if p.name[4:].isdigit()
+                   and (p / '.metadata.json').is_file()
+                   and (p / 'config.json').is_file()
+                   and (p / 'model_and_optim/.metadata').is_file()]
+    if not checkpoints:
+        raise ValueError(f'No complete checkpoint in {output}')
+    return max(checkpoints, key=lambda p: int(p.name[4:]))
+
+
+def model_artifacts(args):
+    cfg, output = training_plan(args)
+    summary = read_json(output / 'training_summary.json')
+    if summary['config'] != cfg:
+        raise ValueError('Training summary does not match requested configuration')
+    checkpoint = latest_checkpoint(output)
+    if str(checkpoint) != summary['checkpoint']:
+        raise ValueError('Latest checkpoint differs from completed training')
+    export_root = output / 'hf'
+    exported = export_root / checkpoint.parent.name / checkpoint.name
+    return output, checkpoint, export_root, exported
+
+
+def convert_model(args):
+    output, checkpoint, export_root, exported = model_artifacts(args)
+    with lock(args.root, f'conversion-{args.model_size}-{dataset_name(args)}-{output.name}'):
+        if not exported.exists():
+            run([sys.executable, 'eval/checkpoint_converter.py', checkpoint,
+                 '--output-dir', export_root])
+        conversion = read_json(exported / 'conversion.json')
+        if conversion['source_checkpoint'] != str(checkpoint):
+            raise ValueError('Export came from a different checkpoint')
+        # Scan the raw corpus once on CPUs; every evaluation reuses this sample.
+        sys.path.insert(0, str(REPO / 'eval'))
+        import eval_suite
+        eval_suite.DOLMA_DATA_FILE = raw_file(args)
+        eval_suite.DOLMA_SAMPLE_DIR = args.root / '.cache/dolma_samples'
+        sample = eval_suite.dolma_sample()
+        write_json(output / 'conversion_summary.json', {
+            'exported': str(exported), 'conversion': conversion,
+            'heldout_documents': len(sample),
+        })
+
+
+def evaluate_model(args):
+    output, checkpoint, _, exported = model_artifacts(args)
+    read_json(output / 'conversion_summary.json')
+    with lock(args.root, f'evaluation-{args.model_size}-{dataset_name(args)}-{output.name}'):
+        directory = output / 'evaluation'
+        directory.mkdir(parents=True, exist_ok=True)
+        metrics = {}
+        for name in args.evals:
+            result = directory / f'{name}.json'
+            if not result.exists():
+                run([sys.executable, 'eval/eval_suite.py', exported, name,
+                     '--dolma-sample-dir', args.root / '.cache/dolma_samples',
+                     '--output-dir', directory])
+            value = read_json(result)
+            if value['eval'] != name or value['model_checkpoint'] != str(exported):
+                raise ValueError(f'Evaluation provenance mismatch: {result}')
+            metrics[name] = value
+        write_json(output / 'evaluation_summary.json', {
+            'model_size': args.model_size, 'vocab_size': args.vocab_size,
+            'checkpoint': str(checkpoint), 'exported': str(exported), 'metrics': metrics,
+            'training': read_json(output / 'training_summary.json'),
+        })
+
+
+def publish_summary(args):
+    """Expose small manifests through Beaker results; large artifacts stay on Weka."""
+    summary = {'stage': args.stage, 'revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
+    if args.stage == 'download-data':
+        summary['data'] = read_json(args.root / 'raw_text/provenance.json')
+    elif args.stage == 'train-tokenizer':
+        summary['tokenizer'] = read_json(tokenizer_file(args).with_name('pipeline.json'))
+    elif args.stage == 'tokenize-data':
+        summary['meta'] = completed_meta(tokenized_dir(args), args.vocab_size)
+    else:
+        _, output = training_plan(args)
+        filename = {'train-model': 'training', 'convert-model': 'conversion',
+                    'evaluate-model': 'evaluation'}[args.stage]
+        summary.update(read_json(output / f'{filename}_summary.json'))
+    if Path('/results').is_dir():
+        write_json(Path('/results/summary.json'), summary)
+    return summary
 
 
 def main():
@@ -302,7 +402,9 @@ def main():
     validate_args(args)
     args.root.mkdir(parents=True, exist_ok=True)
     {'download-data': download_data, 'train-tokenizer': train_tokenizer,
-     'tokenize-data': tokenize_data, 'train-model': train_model}[args.stage](args)
+     'tokenize-data': tokenize_data, 'train-model': train_model,
+     'convert-model': convert_model, 'evaluate-model': evaluate_model}[args.stage](args)
+    publish_summary(args)
 
 
 if __name__ == '__main__':

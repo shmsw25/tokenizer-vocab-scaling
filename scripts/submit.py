@@ -9,7 +9,7 @@ import sys
 import tempfile
 import uuid
 
-from pipeline import REPO, STAGES, add_stage_arguments, validate_args
+from pipeline import REPO, STAGES, MODEL_STAGES, add_stage_arguments, validate_args
 
 # Existing ai2/flex2 image, verified by Beaker image lookup on 2026-10-12.
 GPU_IMAGE = '01KAXVQ0YN242MQ9YEQDQQK512'  # tylerr/olmo-core-tch280cu128-2025-11-25
@@ -19,7 +19,13 @@ RESOURCES = {
     'train-tokenizer': (64, '128 GiB'),
     'tokenize-data': (16, '64 GiB'),
     'train-model': (32, '256 GiB'),
+    'convert-model': (8, '64 GiB'),
+    'evaluate-model': (8, '64 GiB'),
 }
+
+
+def gpu_count(args):
+    return args.gpus if args.stage == 'train-model' else int(args.stage == 'evaluate-model')
 
 
 def parser():
@@ -30,13 +36,13 @@ def parser():
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
         s.add_argument('--cluster', default=os.environ.get('BEAKER_CLUSTER',
-                       'ai2/jupiter' if stage == 'train-model' else 'ai2/phobos'))
+                       'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos'))
         s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'), default='normal')
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
         s.add_argument('--preemptible', action='store_true')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')
-        s.add_argument('--image', default=GPU_IMAGE if stage == 'train-model' else CPU_IMAGE,
+        s.add_argument('--image', default=GPU_IMAGE if stage in MODEL_STAGES else CPU_IMAGE,
                        help='Beaker image ID for training; Docker image for CPU stages')
         s.add_argument('--hf-token-secret', help='Optional Beaker secret name to expose as HF_TOKEN')
         s.add_argument('--dry-run', action='store_true', help='Print JSON; no upload or job submission')
@@ -49,7 +55,7 @@ def stage_arguments(args):
     result = [args.stage, '--root', str(args.root)]
     if args.stage != 'download-data':
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
-    if args.stage == 'train-model':
+    if args.stage in MODEL_STAGES:
         for name in ('model_size', 'gpus', 'micro_batch_size', 'batch_size',
                      'learning_rate', 'weight_decay', 'epochs', 'seed', 'max_steps'):
             value = getattr(args, name)
@@ -57,15 +63,18 @@ def stage_arguments(args):
                 result += ['--' + name.replace('_', '-'), str(value)]
         if args.no_compile:
             result.append('--no-compile')
+    if args.stage == 'evaluate-model':
+        result += ['--evals', *args.evals]
     return result
 
 
 def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD'):
-    gpu_job = args.stage == 'train-model'
+    requested_gpus = gpu_count(args)
+    gpu_job = requested_gpus > 0
     env = {
         'PYTHONUNBUFFERED': '1', 'TOKENIZERS_PARALLELISM': 'true',
         'RAYON_NUM_THREADS': str(args.cpus),
-        'OMP_NUM_THREADS': str(max(1, args.cpus // (args.gpus if gpu_job else 1))),
+        'OMP_NUM_THREADS': str(max(1, args.cpus // (requested_gpus or 1))),
         'HF_HOME': str(args.root / '.cache/huggingface'),
         'TOKENIZER_CODE_REVISION': revision,
     }
@@ -79,7 +88,7 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD'):
         'description': f'Tokenizer project: {args.stage}; source {revision}',
         'tasks': [{
             'name': 'main',
-            'image': {'beaker' if gpu_job else 'docker': args.image},
+            'image': {'beaker' if args.stage in MODEL_STAGES else 'docker': args.image},
             'command': ['bash', '/code/bootstrap.sh'],
             'arguments': stage_arguments(args),
             'envVars': env_vars,
@@ -89,7 +98,7 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD'):
             ],
             'result': {'path': '/results'},
             'resources': {'cpuCount': args.cpus, 'memory': args.memory,
-                          'gpuCount': args.gpus if gpu_job else 0,
+                          'gpuCount': requested_gpus,
                           'sharedMemory': '8 GiB' if gpu_job else '1 GiB'},
             'constraints': {'cluster': [args.cluster]},
             'context': {'priority': args.priority, 'preemptible': args.preemptible},
@@ -142,12 +151,13 @@ def main():
             workspace = b.workspace.get(args.workspace)
             cluster = b.cluster.get(args.cluster)
             hostnames = None
-            if args.stage == 'train-model':
+            if args.stage in MODEL_STAGES:
                 b.image.get(args.image)
+            if gpu_count(args):
                 from google.protobuf.json_format import MessageToDict
                 hostnames = [n.hostname for n in b.node.list(cluster=cluster)
                              if MessageToDict(n).get('nodeResources', {}).get('gpuType')
-                             == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= args.gpus]
+                             == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
                 if not hostnames:
                     raise RuntimeError('No qualifying H100 nodes in the requested cluster')
             elif cluster.node_shape.gpu_count:

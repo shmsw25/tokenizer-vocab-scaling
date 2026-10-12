@@ -547,13 +547,16 @@ EVALS = {'blimp': eval_blimp, 'arc_easy': eval_arc_easy,
 
 
 def main():
-    global DOLMA_DATA_FILE, NEMOTRON_DATA_FILE, NEMOTRON_LANGUAGES
+    global DOLMA_DATA_FILE, DOLMA_SAMPLE_DIR, NEMOTRON_DATA_FILE, NEMOTRON_LANGUAGES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model_checkpoint', help='Local Hugging Face or native trainer_mixture checkpoint directory')
     parser.add_argument('evals', help='Comma-separated eval names: ' + ','.join(EVALS))
     parser.add_argument('--nemotron-file', type=Path, default=NEMOTRON_DATA_FILE)
     parser.add_argument('--nemotron-languages', default=','.join(NEMOTRON_LANGUAGES))
+    parser.add_argument('--dolma-sample-dir', type=Path, default=DOLMA_SAMPLE_DIR)
+    parser.add_argument('--output-dir', type=Path, help='Atomically save each completed evaluation')
     args = parser.parse_args()
+    DOLMA_SAMPLE_DIR = args.dolma_sample_dir.resolve()
     NEMOTRON_DATA_FILE = args.nemotron_file.resolve()
     NEMOTRON_LANGUAGES = tuple(args.nemotron_languages.split(','))
     if not all(NEMOTRON_LANGUAGES) or len(set(NEMOTRON_LANGUAGES)) != len(NEMOTRON_LANGUAGES):
@@ -579,7 +582,15 @@ def main():
             args.model_checkpoint, local_files_only=True).to(device).eval()
     for name in names:
         metrics = EVALS[name](model, tokenizer)
-        print(json.dumps({'eval': name, **metadata, **metrics}, allow_nan=False), flush=True)
+        result = {'eval': name, 'model_checkpoint': str(Path(args.model_checkpoint).resolve()),
+                  **metadata, **metrics}
+        encoded = json.dumps(result, allow_nan=False)
+        if args.output_dir:
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w', dir=args.output_dir, delete=False) as tmp:
+                tmp.write(encoded + '\n')
+            Path(tmp.name).replace(args.output_dir / f'{name}.json')
+        print(encoded, flush=True)
 
 
 if __name__ == '__main__':

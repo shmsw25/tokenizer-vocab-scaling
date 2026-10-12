@@ -29,7 +29,7 @@ Beaker authentication uses the existing `~/.beaker/config.yml`, or the
 commit tokens. The dataset is public; `--hf-token-secret SECRET_NAME` is an
 optional way to supply a workspace Beaker secret as `HF_TOKEN` to a job.
 
-CPU jobs use the `python:3.12-slim-bookworm` Docker image and install only
+CPU data jobs use the `python:3.12-slim-bookworm` Docker image and install only
 `requirements-cpu.txt`, with no PyTorch or CUDA dependency. Training
 uses Beaker image `01KAXVQ0YN242MQ9YEQDQQK512`
 (`tylerr/olmo-core-tch280cu128-2025-11-25`) plus the local patched EMO package.
@@ -64,8 +64,8 @@ All vocabulary-dependent stages default to `--data-size 100GB`. The optional
 a 32k reference tokenized from that same 250GB corpus. `--root` may override the
 project directory, but Beaker submissions require it to stay inside the Weka
 mount. Model config names currently available are `small`, `medium`, and
-`medium_large`. A new size such as `medium_large` can be added as
-`configs/medium_large.json` without editing any script.
+`medium_large`. The campaign accepts model sizes and vocabulary sizes as arguments;
+there are no per-vocabulary shell scripts. All requirements files live at the repository root.
 
 ## Review a job before launching
 
@@ -183,6 +183,60 @@ form the model directory name. Repeating the same command resumes EMO's latest
 checkpoint there. Changed LR/batch/schedule/configuration produces a different
 path. A writer lock prevents simultaneous training into the same directory.
 The exact submitted commit is recorded in Beaker and `source_revisions.txt`.
+
+## 5. Convert checkpoints and evaluate
+
+```bash
+# After training succeeds; pass the same model/training arguments to identify its output:
+python scripts/submit.py convert-model --vocab-size "$VOCAB_SIZE" --model-size small
+# After conversion succeeds:
+python scripts/submit.py evaluate-model --vocab-size "$VOCAB_SIZE" --model-size small
+```
+
+Conversion requests **zero GPUs on Phobos**, uses the training dependency image,
+exports the final completed checkpoint to Hugging Face format, and verifies
+numerical agreement with EMO before publishing it. It also prepares the shared
+1,000-document held-out Dolma evaluation sample on CPUs. Evaluation requests
+**one H100** and runs BLiMP, ARC-Easy, HellaSwag, PIQA, and Dolma BPB. The repository
+uses byte-normalized downstream scoring, including BLiMP, so these accuracy
+numbers should not be conflated with standard benchmark implementations.
+Conversion outputs and resumable per-task evaluation JSON stay inside the
+model directory. Small manifests are also exported through Beaker `/results/summary.json`.
+
+## Run and monitor the campaign
+
+The controller accepts arbitrary vocabularies (including the required 32000
+reference) and the three model sizes. It saves its state and HTML report under
+ignored `.build/`, so monitoring does not dirty source snapshots. Initialize
+**once**; adopting a receipt reuses an existing download instead of starting another.
+
+```bash
+python scripts/campaign.py --init --download-receipt .build/download-receipt.json \
+  --vocabs 32000 64000 128000 --models small medium medium_large
+
+# Repeat each hour; only successful prerequisites allow downstream submissions:
+python scripts/campaign.py --advance
+
+# Inspect/render saved state without network access or job submission:
+python scripts/campaign.py --offline
+```
+
+The graph contains one download/sample job, three tokenizer jobs, three
+tokenization jobs, nine one-epoch training jobs, nine CPU conversions, and nine
+evaluations. It records intended names before submission and recovers uncertain
+submission outcomes by looking up those names. No live training job is restarted
+or duplicated. Failed jobs remain visible for diagnosis; after fixing the cause,
+`--advance --retry-node NODE_KEY` explicitly retries a confirmed failure, resuming
+existing Weka work where supported. It allows at most three attempts per node.
+
+Each poll saves job status, observed GPU assignments, log tails, configurations,
+result manifests, and current ETAs. Download ETA uses recent observed text-byte
+throughput and excludes the subsequent sampling pass; model ETA comes from EMO.
+Queue wait and unmeasured stages are reported as unknown. The HTML report at
+`.build/report.html` is marked complete only after all nine evaluations succeed
+and all five metrics are available. It embeds downloadable JSON provenance.
+The controller is a single polling command, not its own background scheduler;
+the requested hourly chat heartbeat invokes it and reports progress.
 
 ## Resource and placement overrides
 
