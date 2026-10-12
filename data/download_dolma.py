@@ -1,5 +1,6 @@
 """Run: python -m pip install -r requirements.txt && python download_dolma.py"""
 
+import argparse
 import csv
 import json
 import random
@@ -16,9 +17,14 @@ if "zstd" not in fsspec.available_compressions():
         "Dolma requires zstandard. Install it with: python -m pip install zstandard"
     )
 
+parser = argparse.ArgumentParser(description="Download the pinned proportional 250GB Dolma sample")
+parser.add_argument("--output", type=Path, default=Path("dolma3_250gb.jsonl"))
+args = parser.parse_args()
+estimates_dir = Path(__file__).resolve().parent
+
 repo = "allenai/dolma3_mix-6T"
-revision = json.loads(Path("dolma_text_estimate_metadata.json").read_text())["revision"]
-with open("dolma_topic_text_estimates.csv") as f:
+revision = json.loads((estimates_dir / "dolma_text_estimate_metadata.json").read_text())["revision"]
+with (estimates_dir / "dolma_topic_text_estimates.csv").open() as f:
     topics = list(csv.DictReader(f))
 estimated_total = sum(float(row["estimated_text_bytes"]) for row in topics)
 files_by_topic = {row["source_topic"]: [] for row in topics}
@@ -29,7 +35,8 @@ for path in HfApi().list_repo_files(repo, repo_type="dataset", revision=revision
 rng = random.Random(42)
 
 target_bytes = 250_000_000_000  # UTF-8 document text, excluding metadata.
-output = Path("dolma3_250gb.jsonl")
+output = args.output
+output.parent.mkdir(parents=True, exist_ok=True)
 partial = output.with_suffix(".jsonl.part")
 text_bytes = 0
 count = 0

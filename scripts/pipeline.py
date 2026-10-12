@@ -1,0 +1,301 @@
+"""Run one pipeline stage inside a Beaker job; also usable for small local checks."""
+import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+REPO = Path(__file__).resolve().parents[1]
+DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
+REFERENCE_VOCAB = 32000
+STAGES = ('download-data', 'train-tokenizer', 'tokenize-data', 'train-model')
+
+
+def positive_int(value):
+    value = int(value)
+    if value <= 0:
+        raise argparse.ArgumentTypeError('must be positive')
+    return value
+
+
+def positive_float(value):
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError('must be finite and positive')
+    return value
+
+
+def add_stage_arguments(parser, stage):
+    parser.add_argument('--root', type=Path, default=Path(DEFAULT_ROOT))
+    if stage != 'download-data':
+        parser.add_argument('--vocab-size', required=True, type=positive_int)
+        parser.add_argument('--data-size', choices=('100GB', '250GB'), default='100GB')
+    if stage == 'train-model':
+        parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
+        parser.add_argument('--gpus', type=positive_int, default=1)
+        parser.add_argument('--micro-batch-size', type=positive_int, default=1)
+        parser.add_argument('--batch-size', type=positive_int, default=128,
+                            help='Global sequences per optimizer step, independent of GPU count')
+        parser.add_argument('--learning-rate', type=positive_float)
+        parser.add_argument('--weight-decay', type=float)
+        parser.add_argument('--epochs', type=positive_int, default=1)
+        parser.add_argument('--seed', type=int, default=42)
+        parser.add_argument('--max-steps', type=positive_int,
+                            help='Optional short run; overrides the epoch budget')
+        parser.add_argument('--no-compile', action='store_true')
+
+
+def validate_args(args):
+    if not args.root.is_absolute():
+        raise ValueError('--root must be absolute')
+    if args.stage == 'download-data':
+        return
+    if args.vocab_size < 257:
+        raise ValueError('--vocab-size must include 256 byte symbols and EOS (at least 257)')
+    if args.stage == 'train-model':
+        if not re.fullmatch(r'[a-zA-Z0-9_-]+', args.model_size):
+            raise ValueError('--model-size must be a config name, without directories')
+        if not (REPO / 'configs' / f'{args.model_size}.json').is_file():
+            raise ValueError(f'Missing configs/{args.model_size}.json')
+        if args.batch_size % (args.gpus * args.micro_batch_size):
+            raise ValueError('--batch-size must be divisible by --gpus * --micro-batch-size')
+        if args.weight_decay is not None and (not math.isfinite(args.weight_decay) or args.weight_decay < 0):
+            raise ValueError('--weight-decay must be finite and nonnegative')
+
+
+def dataset_name(args, vocab=None):
+    return f'default_{args.data_size}_{args.vocab_size if vocab is None else vocab}'
+
+
+def tokenized_dir(args, vocab=None):
+    return args.root / 'tokenized_data' / dataset_name(args, vocab)
+
+
+def raw_file(args):
+    return args.root / 'raw_text' / args.data_size / f'dolma3_{args.data_size.lower()}.jsonl'
+
+
+def tokenizer_file(args):
+    return args.root / 'tokenizers' / dataset_name(args) / 'tokenizer.json'
+
+
+def read_json(path):
+    return json.loads(path.read_text())
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + '.part')
+    partial.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+    partial.replace(path)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def raw_signature(path):
+    st = path.stat()
+    if not st.st_size:
+        raise ValueError(f'Empty raw text file: {path}')
+    return {'path': str(path), 'size': st.st_size, 'mtime_ns': st.st_mtime_ns}
+
+
+@contextmanager
+def lock(root, name):
+    locks = root / '.locks'
+    locks.mkdir(parents=True, exist_ok=True)
+    with (locks / f'{name}.lock').open('a') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(f'Another job is already writing {name}') from None
+        yield
+
+
+def run(command):
+    print('Running:', ' '.join(map(str, command)), flush=True)
+    subprocess.run([str(x) for x in command], check=True, cwd=REPO)
+
+
+def download_data(args):
+    full = args.root / 'raw_text/250GB/dolma3_250gb.jsonl'
+    sample = args.root / 'raw_text/100GB/dolma3_100gb.jsonl'
+    with lock(args.root, 'raw-text'):
+        for path in (full, sample):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not full.exists():
+            run([sys.executable, 'data/download_dolma.py', '--output', full])
+        raw_signature(full)
+        if not sample.exists():
+            run([sys.executable, 'data/repeat_dolma.py', '--input', full,
+                 '--sample-fraction', '0.4', '--seed', '42', '--output', sample])
+        raw_signature(sample)
+        write_json(args.root / 'raw_text/provenance.json', {
+            'upstream': read_json(REPO / 'data/dolma_text_estimate_metadata.json'),
+            'target_text_bytes': 250_000_000_000, 'sample_fraction': 0.4,
+            'sampling_seed': 42, 'repetitions': 1,
+            'full': raw_signature(full), 'sample': raw_signature(sample),
+        })
+        print(f'Raw data ready: {sample}', flush=True)
+
+
+def train_tokenizer(args):
+    target = tokenizer_file(args)
+    signature = raw_signature(raw_file(args))
+    marker = target.with_name('pipeline.json')
+    with lock(args.root, f'tokenizer-{dataset_name(args)}'):
+        if target.exists():
+            info = read_json(marker)
+            if info['raw'] != signature or info['sha256'] != digest(target):
+                raise ValueError('Existing tokenizer does not match its source/provenance')
+            print(f'Tokenizer already complete: {target}', flush=True)
+            return
+        # Publish the tokenizer only after its provenance is complete. An
+        # interrupted attempt can replace this private staging file on retry.
+        staging = target.with_name('tokenizer.staging.json')
+        run([sys.executable, 'train_tokenizer.py', '--data', raw_file(args),
+             '--vocab-size', args.vocab_size, '--output', staging, '--overwrite'])
+        if raw_signature(raw_file(args)) != signature:
+            raise ValueError('Raw text changed during tokenizer training')
+        write_json(marker, {'raw': signature, 'vocab_size': args.vocab_size, 'sha256': digest(staging)})
+        staging.replace(target)
+
+
+def completed_meta(directory, expected_vocab):
+    meta = read_json(directory / 'meta.json')
+    if meta['vocab_size'] != expected_vocab:
+        raise ValueError(f'Wrong vocabulary in {directory}: {meta["vocab_size"]}')
+    ratio = meta['tokens_per_byte']
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError(f'Invalid tokens_per_byte in {directory}')
+    for split in ('train', 'eval'):
+        if (directory / f'{split}.bin').stat().st_size != meta[split]['tokens'] * 4:
+            raise ValueError(f'{split}.bin size does not match meta.json in {directory}')
+    if not (directory / 'tokenizer.json').is_file():
+        raise FileNotFoundError(directory / 'tokenizer.json')
+    return meta
+
+
+def tokenize_data(args):
+    target = tokenized_dir(args)
+    expected = {'raw': raw_signature(raw_file(args)), 'tokenizer_sha256': digest(tokenizer_file(args))}
+    marker = target / 'pipeline.json'
+    with lock(args.root, f'tokenized-{dataset_name(args)}'):
+        if (target / 'meta.json').exists():
+            completed_meta(target, args.vocab_size)
+            if read_json(marker) != expected:
+                raise ValueError('Existing tokenized data has a different source/tokenizer')
+            print(f'Tokenized data already complete: {target}', flush=True)
+            return
+        # An incomplete attempt is rewritten from the start while holding the lock.
+        # Publish provenance first; meta.json remains the completion marker.
+        write_json(marker, expected)
+        run([sys.executable, 'tokenize_data.py', '--data', raw_file(args),
+             '--tokenizer', tokenizer_file(args), '--output-dir', target,
+             '--seed', '42', '--eval-fraction', '0.01'])
+        if raw_signature(raw_file(args)) != expected['raw']:
+            (target / 'meta.json').unlink()
+            raise ValueError('Raw text changed during tokenization')
+        completed_meta(target, args.vocab_size)
+
+
+def training_plan(args):
+    data = tokenized_dir(args)
+    reference = tokenized_dir(args, REFERENCE_VOCAB)
+    meta = completed_meta(data, args.vocab_size)
+    baseline = completed_meta(reference, REFERENCE_VOCAB)
+    # The measured ratios must come from precisely the same corpus/split.
+    for key in ('data_files', 'seed', 'eval_fraction'):
+        if meta[key] != baseline[key]:
+            raise ValueError(f'Target and 32k reference differ in {key}')
+    for split in ('train', 'eval'):
+        for key in ('documents', 'bytes'):
+            if meta[split][key] != baseline[split][key]:
+                raise ValueError(f'Target and 32k reference differ in {split}.{key}')
+    for directory in (data, reference):
+        provenance = read_json(directory / 'pipeline.json')
+        if provenance['raw'] != raw_signature(raw_file(args)):
+            raise ValueError(f'Raw text no longer matches {directory}')
+        if provenance['tokenizer_sha256'] != digest(directory / 'tokenizer.json'):
+            raise ValueError(f'Tokenizer has changed in {directory}')
+    seq = round(4096 * meta['tokens_per_byte'] / baseline['tokens_per_byte'])
+    if seq < 2:
+        raise ValueError('Scaled sequence length is less than 2')
+    # The loader drops an incomplete final global batch; fail before using a GPU
+    # for a run too small to contain one complete optimizer step.
+    if meta['train']['tokens'] // seq < args.batch_size or meta['eval']['tokens'] < seq:
+        raise ValueError('Not enough train/eval tokens for the scaled sequence length and batch')
+    cfg = read_json(REPO / 'configs' / f'{args.model_size}.json')
+    cfg['seq_length'] = seq
+    t = cfg['training']
+    t.update(epochs=args.epochs, seed=args.seed, micro_batch_size=args.micro_batch_size,
+             gradient_accumulation_steps=args.batch_size // (args.gpus * args.micro_batch_size))
+    t.pop('max_steps', None)
+    if args.max_steps is not None:
+        t['max_steps'] = args.max_steps
+    if args.learning_rate is not None:
+        t['learning_rate'] = args.learning_rate
+    if args.weight_decay is not None:
+        t['weight_decay'] = args.weight_decay
+    if args.no_compile:
+        t['compile'] = False
+    # train.py constructs WSD directly; no scheduler override is accepted.
+    if not (0 <= t['warmup_fraction'] < 1 and 0 < t['decay_fraction'] <= 1
+            and t['warmup_fraction'] + t['decay_fraction'] <= 1):
+        raise ValueError('Invalid WSD warmup/decay fractions')
+    cfg['pipeline'] = {
+        'scheduler': 'WSD', 'reference_vocab_size': REFERENCE_VOCAB,
+        'reference_sequence_length': 4096, 'reference_tokens_per_byte': baseline['tokens_per_byte'],
+        'tokens_per_byte': meta['tokens_per_byte'], 'global_batch_size': args.batch_size,
+        'gpus': args.gpus, 'tokenizer_sha256': digest(data / 'tokenizer.json'),
+        'raw': raw_signature(raw_file(args)),
+    }
+    fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
+    budget = f'steps{args.max_steps}' if args.max_steps else f'e{args.epochs}'
+    run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
+                f'seq{seq}_{budget}_seed{args.seed}_wu{t["warmup_fraction"]:g}_'
+                f'decay{t["decay_fraction"]:g}_{fingerprint}')
+    output = args.root / 'models' / args.model_size / dataset_name(args) / run_name
+    return cfg, output
+
+
+def train_model(args):
+    cfg, output = training_plan(args)
+    with lock(args.root, f'model-{args.model_size}-{dataset_name(args)}-{output.name}'):
+        config_path = output / 'launch_config.json'
+        if config_path.exists() and read_json(config_path) != cfg:
+            raise ValueError('Refusing to resume with a changed config')
+        write_json(config_path, cfg)
+        # The exact source revision is also available in the Beaker experiment
+        # and its immutable code dataset; retain it next to the checkpoints.
+        with (output / 'source_revisions.txt').open('a') as history:
+            history.write(os.environ.get('TOKENIZER_CODE_REVISION', 'local') + '\n')
+        print(f'Model output: {output}', flush=True)
+        print(f'Scaled sequence length: {cfg["seq_length"]}', flush=True)
+        run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
+             f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
+             '--data-dir', tokenized_dir(args), '--output-dir', output,
+             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='stage', required=True)
+    for stage in STAGES:
+        add_stage_arguments(sub.add_parser(stage), stage)
+    args = parser.parse_args()
+    validate_args(args)
+    args.root.mkdir(parents=True, exist_ok=True)
+    {'download-data': download_data, 'train-tokenizer': train_tokenizer,
+     'tokenize-data': tokenize_data, 'train-model': train_model}[args.stage](args)
+
+
+if __name__ == '__main__':
+    main()

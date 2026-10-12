@@ -30,6 +30,11 @@ From this directory:
 python download_dolma.py
 ```
 
+`--output /absolute/path/dolma3_250gb.jsonl` writes to another directory. The
+pinned estimates and revision are always read next to the downloader source.
+For the combined CPU-only Beaker download and sample job, see
+[`../scripts/README.md`](../scripts/README.md).
+
 It needs about 4 CPUs and 32 GB RAM, no GPU, and roughly a day. It writes `dolma3_250gb.jsonl.part` and renames it to
 `dolma3_250gb.jsonl` on success. Restarting scans the partial file to recover
 progress, skips completed topics and saved records, then appends the remaining

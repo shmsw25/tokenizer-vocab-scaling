@@ -1,0 +1,8 @@
+# CPU data and tokenizer jobs: deliberately no torch or CUDA dependency.
+tokenizers==0.23.2
+datasets==5.0.1
+numpy
+tqdm
+zstandard
+pyarrow
+huggingface_hub

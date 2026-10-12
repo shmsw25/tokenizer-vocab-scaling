@@ -78,7 +78,9 @@ def main():
     }
     shutil.copyfile(args.tokenizer, args.output_dir / 'tokenizer.json')
     # meta.json is written last and marks the directory as complete.
-    (args.output_dir / 'meta.json').write_text(json.dumps(meta, indent=2) + '\n')
+    meta_partial = args.output_dir / 'meta.json.part'
+    meta_partial.write_text(json.dumps(meta, indent=2) + '\n')
+    meta_partial.replace(args.output_dir / 'meta.json')
     print(json.dumps(meta, indent=2), flush=True)
 
 

@@ -17,15 +17,23 @@ files, where every line is `{"text": "one document", ...}`.
 
 ## Setup
 
+For the Jupiter/Weka workflow, see **[scripts/README.md](scripts/README.md)**.
+It submits separate CPU data/tokenizer jobs and GPU model jobs to Beaker,
+defaults to the uniform 100GB sample, and always matches context to 32k.
+
 ```bash
 conda create -n tokenizer-scaling python=3.12 && conda activate tokenizer-scaling
 ./setup_env.sh
 ```
 
-`setup_env.sh` installs `requirements.txt`, clones [EMO](https://github.com/allenai/EMO)
-(the OLMo-core training library) at a pinned commit, and applies
-`emo_tied_embeddings.patch`. The patch adds tied input/output embeddings and
-makes gradient accumulation sync gradients once per optimizer step under DDP.
+`setup_env.sh` installs `requirements.txt`, the Beaker submission SDK, and the
+local [EMO](https://github.com/allenai/EMO) training library. `EMO/` is checked
+into this repository at pinned commit `246fdec72e599319c717aefe29a1d1fdad7c97a0`,
+with `emo_tied_embeddings.patch` already applied. The patch adds tied
+input/output embeddings and makes gradient accumulation sync gradients once
+per optimizer step under DDP. `EMO_VENDOR.json` records provenance and hashes;
+setup verifies the patched files. No submodule or extra clone is needed.
+Use `./setup_env.sh cpu` for the CPU-only data/tokenizer dependencies.
 
 ## 1. Train tokenizers
 
