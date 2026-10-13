@@ -51,6 +51,8 @@ def make_nodes(vocabs, models, pools=POOL_SIZES, training_pools=TRAINING_POOLS):
         nodes[key] = {'stage': stage, 'dependencies': dependencies, 'arguments': arguments,
                       'vocab_size': vocab, 'model_size': model, 'data_size': pool, 'status': 'pending',
                       'expected_gpus': 8 if stage == 'train-model' else int(stage == 'evaluate-model')}
+        if stage == 'train-model':
+            nodes[key].update(priority='urgent', placement_clusters=['ai2/jupiter'])
 
     add('download', 'download-data', [])
     sample_keys = [f'sample-{size_key(pool)}' for pool in pools]
@@ -188,6 +190,8 @@ def record_assignment(node, assignment):
 
 def placement_arguments(node):
     result = []
+    if node.get('priority'):
+        result += ['--priority', node['priority']]
     if node.get('placement_clusters'):
         result += ['--cluster', *node['placement_clusters']]
     if node.get('allow_gpu_reservation'):

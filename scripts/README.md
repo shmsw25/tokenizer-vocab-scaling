@@ -327,11 +327,14 @@ the requested hourly chat heartbeat invokes it and reports progress.
 
 Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 `--priority`, `--image`, and `--name`. Workspace and cluster can also default
-from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Priority defaults to `normal`;
-model-training jobs always use `minRuntime: 0s`. Other stages are non-preemptible
+from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Model training defaults to `urgent`
+priority; other stages default to `normal`. Model-training jobs always use
+`minRuntime: 0s`. Other stages are non-preemptible
 unless `--preemptible` is supplied. CPU scripts expose
 no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
-constrain placement to H100 nodes in the requested cluster. GPU clusters use
+check H100 availability and use the requested cluster as their placement
+constraint, without a hostname list. The campaign uses `ai2/jupiter` for training;
+verify the actual GPU assignment when each job starts. GPU clusters use
 whole GPU slots even for `gpuCount: 0`. Download and raw sampling permit this scheduler
 reservation to broaden placement; the monitor reports requested and assigned
 counts separately. Other CPU stages default to Phobos; use

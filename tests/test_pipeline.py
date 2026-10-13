@@ -57,15 +57,17 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
-def test_gpu_placement_uses_only_h100_hosts_from_requested_cluster():
-    spec = submit.make_spec(args_for('train-model', '--vocab-size', '32000'))
-    submit.constrain_h100_hosts(spec, ['jupiter-h100-1', 'jupiter-h100-2'])
+def test_training_uses_urgent_cluster_placement_and_zero_minimum_runtime():
+    node = campaign.make_nodes([32000], ['small'])['train-small-5gb-32000']
+    args = submit.parser().parse_args([*node['arguments'], *campaign.placement_arguments(node)])
+    spec = submit.make_spec(args)
     task = submit.parse_spec(spec).to_json()['tasks'][0]
-    assert task['constraints'] == {'hostname': ['jupiter-h100-1', 'jupiter-h100-2']}
+    assert task['constraints'] == {'cluster': ['ai2/jupiter']}
     assert task['resources']['gpuCount'] == 8
     assert task['context']['minRuntime'] == 0
-    with pytest.raises(ValueError, match='No qualifying'):
-        submit.constrain_h100_hosts(spec, [])
+    assert task['context']['priority'] == 'urgent'
+    assert args_for('train-model', '--vocab-size', '32000').priority == 'urgent'
+    assert args_for('evaluate-model', '--vocab-size', '32000').priority == 'normal'
 
 
 @pytest.mark.parametrize('stage', ['train-tokenizer', 'tokenize-data', 'convert-model'])

@@ -43,7 +43,8 @@ def parser():
                        help='One or more eligible Weka clusters; GPU stages require one cluster')
         s.add_argument('--allow-gpu-reservation', action='store_true',
                        help='Allow CPU jobs on GPU clusters while still requesting zero GPUs')
-        s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'), default='normal')
+        s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'),
+                       default='urgent' if stage == 'train-model' else 'normal')
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
         s.add_argument('--preemptible', action='store_true')
@@ -179,17 +180,6 @@ def save_spec(spec, destination):
         destination.write_text(json.dumps(spec, indent=2) + '\n')
 
 
-def constrain_h100_hosts(spec, hostnames):
-    # Hosts were discovered only inside the requested cluster. Beaker rejects
-    # simultaneous cluster and hostname constraints, so the host list carries
-    # both the cluster restriction and the H100 restriction.
-    if not hostnames:
-        raise ValueError('No qualifying H100 hosts')
-    constraints = spec['tasks'][0]['constraints']
-    constraints.pop('cluster', None)
-    constraints['hostname'] = hostnames
-
-
 def create_experiment(beaker, args, workspace, name, spec):
     from beaker.exceptions import BeakerError
     import re
@@ -255,15 +245,14 @@ def main():
             if set(resolved_clusters) - set(eligible):
                 raise ValueError('Requested cluster is not an accessible Weka batch cluster')
             clusters = [b.cluster.get(name) for name in resolved_clusters]
-            hostnames = None
             if args.stage in MODEL_STAGES:
                 b.image.get(args.image)
             if gpu_count(args):
                 from google.protobuf.json_format import MessageToDict
-                hostnames = [n.hostname for n in b.node.list(cluster=clusters[0])
-                             if MessageToDict(n).get('nodeResources', {}).get('gpuType')
-                             == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
-                if not hostnames:
+                h100_nodes = [n for n in b.node.list(cluster=clusters[0])
+                              if MessageToDict(n).get('nodeResources', {}).get('gpuType')
+                              == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
+                if not h100_nodes:
                     raise RuntimeError('No qualifying H100 nodes in the requested cluster')
             elif (args.stage not in RAW_STAGES and not args.allow_gpu_reservation
                   and any(cluster.node_shape.gpu_count for cluster in clusters)):
@@ -274,8 +263,6 @@ def main():
                 description=f'shmsw25/tokenizer-vocab-scaling source at {revision}',
             )
             spec = make_spec(args, dataset.id, revision, resolved_clusters)
-            if hostnames:
-                constrain_h100_hosts(spec, hostnames)
             workload = create_experiment(b, args, workspace, name, spec)
             if args.receipt:
                 from pipeline import write_json
