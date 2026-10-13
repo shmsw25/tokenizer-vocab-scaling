@@ -139,7 +139,12 @@ def build_report_data(state):
             selected.append(choice['id'])
     pools = state.get('training_pools', ['100GB'])
     runs.sort(key=lambda r: (pools.index(r['pool']), r['vocab'], MODEL_ORDER.index(r['model']), r['lr'], r['wd'], r['id']))
+    vocabs = sorted({n['vocab_size'] for n in nodes.values() if n['stage'] == 'tokenize-data'})
+    training_tokens = [{'pool': pool, 'tokens': {
+        vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')
+        for vocab in vocabs}} for pool in pools]
     return {'tokenizers': counts, 'runs': runs, 'selected': selected, 'pools': pools,
+            'training_tokens': training_tokens, 'token_vocab_labels': [vocab_label(v) for v in vocabs],
             'metric_labels': {k: v[0] for k, v in METRICS.items()},
             'pool_details': [n.get('summary', {}).get('pool', {}) for n in nodes.values() if n['stage'] == 'sample-pool'],
             'complete': state['complete']}
