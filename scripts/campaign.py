@@ -152,6 +152,30 @@ def log_progress(lines, stage):
     return {'text': 'Waiting for measurable progress', 'eta': 'Not yet available'}
 
 
+def record_assignment(node, assignment):
+    node['assignment'] = assignment
+    # The protobuf omits the empty list for zero GPUs.
+    assigned_gpus = len(assignment.get('gpus', []))
+    node['assigned_gpus'] = assigned_gpus
+    allow_reservation = node['stage'] in RAW_STAGES or node.get('allow_gpu_reservation', False)
+    if node['expected_gpus'] == 0 and allow_reservation and assigned_gpus:
+        node['resource_warning'] = (f'Requested 0 GPUs; Beaker reserved {assigned_gpus}. '
+                                    'Job remains CPU-only with CUDA disabled.')
+    elif assigned_gpus != node['expected_gpus']:
+        raise RuntimeError(f"Expected {node['expected_gpus']} GPUs, assigned {assigned_gpus}")
+    else:
+        node.pop('resource_warning', None)
+
+
+def placement_arguments(node):
+    result = []
+    if node.get('placement_clusters'):
+        result += ['--cluster', *node['placement_clusters']]
+    if node.get('allow_gpu_reservation'):
+        result += ['--allow-gpu-reservation']
+    return result
+
+
 def refresh(state, folder):
     from beaker import Beaker, BeakerWorkloadStatus
     from beaker.exceptions import BeakerWorkloadNotFound
@@ -188,19 +212,7 @@ def refresh(state, folder):
                                          assigned_details.get('assignedEnvironmentVariables', [])
                                          if entry['name'] == 'BEAKER_NODE_HOSTNAME'), None)
                 if assignment is not None:
-                    node['assignment'] = assignment
-                    # The serialized protobuf omits the empty list for zero GPUs.
-                    assigned_gpus = len(assignment.get('gpus', []))
-                    node['assigned_gpus'] = assigned_gpus
-                    if node['stage'] in RAW_STAGES and assigned_gpus:
-                        # The user accepts scheduler-imposed GPU reservations for
-                        # this CPU workload so it can use any Weka cluster.
-                        node['resource_warning'] = (f'Requested 0 GPUs; Beaker reserved {assigned_gpus}. '
-                                                    'Raw-data job remains CPU-only.')
-                    elif assigned_gpus != node['expected_gpus']:
-                        raise RuntimeError(f"Expected {node['expected_gpus']} GPUs, assigned {assigned_gpus}")
-                    else:
-                        node.pop('resource_warning', None)
+                    record_assignment(node, assignment)
                 lines = [{'timestamp': line.timestamp.ToJsonString(),
                           'message': line.message.decode(errors='replace')}
                          for line in b.job.logs(job, tail_lines=160, follow=False)]
@@ -233,6 +245,7 @@ def submit_ready(state, path):
         write_json(path, state)
         receipt_path = path.parent / 'receipts' / f'{key}.json'
         command = [sys.executable, str(REPO / 'scripts/submit.py'), *node['arguments'],
+                   *placement_arguments(node),
                    '--workspace', state['workspace'], '--name', node['name'],
                    '--receipt', str(receipt_path), '--spec-file', str(path.parent / 'specs' / f'{key}.json')]
         try:

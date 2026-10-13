@@ -39,8 +39,10 @@ def parser():
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
         default_cluster = (None if stage in RAW_STAGES else
                            'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos')
-        s.add_argument('--cluster', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
-                       help='Optional placement restriction; download defaults to all eligible Weka clusters')
+        s.add_argument('--cluster', nargs='+', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
+                       help='One or more eligible Weka clusters; GPU stages require one cluster')
+        s.add_argument('--allow-gpu-reservation', action='store_true',
+                       help='Allow CPU jobs on GPU clusters while still requesting zero GPUs')
         s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'), default='normal')
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
@@ -53,6 +55,11 @@ def parser():
         s.add_argument('--spec-file', type=Path, help='Also save the generated JSON spec')
         s.add_argument('--receipt', type=Path, help='Save the submitted workload IDs as JSON')
     return p
+
+
+def cluster_names(args):
+    value = args.cluster
+    return ([value] if isinstance(value, str) else value) or []
 
 
 def stage_arguments(args):
@@ -134,7 +141,7 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
                           'sharedMemory': '8 GiB' if gpu_job else '1 GiB'},
             # Offline previews use a named placeholder; real submissions resolve
             # every accessible Weka cluster rather than pinning a single cluster.
-            'constraints': {'cluster': resolved_clusters or [args.cluster or WEKA_CLUSTERS_PLACEHOLDER]},
+            'constraints': {'cluster': resolved_clusters or cluster_names(args) or [WEKA_CLUSTERS_PLACEHOLDER]},
             'context': context,
         }],
     }
@@ -200,6 +207,8 @@ def main():
         validate_args(args)
         if args.cpus <= 0:
             raise ValueError('--cpus must be positive')
+        if gpu_count(args) and len(cluster_names(args)) != 1:
+            raise ValueError('GPU stages require exactly one --cluster')
         args.root.resolve().relative_to('/oe-training-default')
     except ValueError as e:
         p.error(f'{e}; Beaker output must be under the /oe-training-default Weka mount')
@@ -226,20 +235,24 @@ def main():
         bootstrap.write_text(git('show', f'{revision}:scripts/bootstrap.sh') + '\n')
         with Beaker.from_env(default_workspace=args.workspace, check_for_upgrades=False) as b:
             workspace = b.workspace.get(args.workspace)
-            cluster = b.cluster.get(args.cluster) if args.cluster else None
-            resolved_clusters = [args.cluster] if cluster else discover_weka_clusters(b, workspace)
+            eligible = discover_weka_clusters(b, workspace)
+            resolved_clusters = cluster_names(args) or eligible
+            if set(resolved_clusters) - set(eligible):
+                raise ValueError('Requested cluster is not an accessible Weka batch cluster')
+            clusters = [b.cluster.get(name) for name in resolved_clusters]
             hostnames = None
             if args.stage in MODEL_STAGES:
                 b.image.get(args.image)
             if gpu_count(args):
                 from google.protobuf.json_format import MessageToDict
-                hostnames = [n.hostname for n in b.node.list(cluster=cluster)
+                hostnames = [n.hostname for n in b.node.list(cluster=clusters[0])
                              if MessageToDict(n).get('nodeResources', {}).get('gpuType')
                              == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
                 if not hostnames:
                     raise RuntimeError('No qualifying H100 nodes in the requested cluster')
-            elif args.stage not in RAW_STAGES and cluster.node_shape.gpu_count:
-                raise ValueError('CPU stages require a CPU-only cluster to avoid reserving GPU slots')
+            elif (args.stage not in RAW_STAGES and not args.allow_gpu_reservation
+                  and any(cluster.node_shape.gpu_count for cluster in clusters)):
+                raise ValueError('CPU jobs on GPU clusters require --allow-gpu-reservation; GPU request remains 0')
             dataset = b.dataset.create(
                 f'tokenizer-code-{revision[:12]}-{uuid.uuid4().hex[:8]}', archive, bootstrap,
                 workspace=workspace, strip_paths=True,

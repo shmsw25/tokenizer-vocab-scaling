@@ -2,7 +2,9 @@
 
 These scripts submit **one stage per Beaker experiment** in `ai2/flex2`.
 Download/sample jobs (including each smaller pool) can run on **any accessible cluster with Weka access**;
-other CPU stages use `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
+other CPU stages default to `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
+The active campaign now places unstarted CPU stages on `ai2/saturn` or `ai2/neptune`
+at the user's request, because Phobos is full.
 Downloading/sampling, tokenizer training, and tokenization explicitly request
 **zero GPUs**. Beaker may reserve a GPU slot for a zero-GPU download on GPU
 clusters; the campaign records this reservation, while CUDA remains disabled.
@@ -321,7 +323,13 @@ no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
 constrain placement to H100 nodes in the requested cluster. GPU clusters use
 whole GPU slots even for `gpuCount: 0`. Download and raw sampling permit this scheduler
 reservation to broaden placement; the monitor reports requested and assigned
-counts separately. Other CPU stages use Phobos and reject GPU-cluster overrides.
+counts separately. Other CPU stages default to Phobos; use
+`--cluster ai2/saturn ai2/neptune --allow-gpu-reservation` to allow either of
+those clusters while still requesting `gpuCount: 0` and disabling CUDA.
+Campaign nodes retain `placement_clusters` and `allow_gpu_reservation`, so
+retries and later CPU stages preserve their configured placement. Confirm an
+old queued experiment is canceled before retrying it on the new placement;
+its receipt remains in `previous_attempts`.
 GPU training is single-node;
 `--gpus` is GPUs on that node.
 

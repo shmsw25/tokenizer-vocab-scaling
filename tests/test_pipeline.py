@@ -55,6 +55,45 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
+@pytest.mark.parametrize('stage', ['train-tokenizer', 'tokenize-data', 'convert-model'])
+def test_cpu_multi_cluster_placement_keeps_zero_gpu_request(stage):
+    node = {'stage': stage, 'expected_gpus': 0,
+            'placement_clusters': ['ai2/saturn', 'ai2/neptune'],
+            'allow_gpu_reservation': True}
+    args = args_for(stage, '--vocab-size', '64000', '--data-size', '5GB',
+                    *campaign.placement_arguments(node))
+    pipeline.validate_args(args)
+    task = submit.parse_spec(submit.make_spec(args)).to_json()['tasks'][0]
+    assert task['constraints']['cluster'] == ['ai2/saturn', 'ai2/neptune']
+    assert task['resources']['gpuCount'] == 0
+    assert any(e['name'] == 'CUDA_VISIBLE_DEVICES' and e['value'] == '' for e in task['envVars'])
+    assert task['datasets'][1]['source']['weka'] == 'oe-training-default'
+    campaign.record_assignment(node, {'gpus': ['gpu-slot-1', 'gpu-slot-2']})
+    assert node['assigned_gpus'] == 2
+    assert 'Requested 0 GPUs; Beaker reserved 2' in node['resource_warning']
+    node.pop('allow_gpu_reservation')
+    with pytest.raises(RuntimeError, match='Expected 0 GPUs, assigned 2'):
+        campaign.record_assignment(node, {'gpus': ['gpu-slot-1', 'gpu-slot-2']})
+    campaign.record_assignment(node, {'cpuCount': 64})
+    assert node['assigned_gpus'] == 0 and 'resource_warning' not in node
+
+
+def test_cpu_relocation_retry_retains_placement_and_old_receipt():
+    state = {'campaign': 'move', 'nodes': {'bpe': {'stage': 'train-tokenizer',
+        'status': 'queued', 'expected_gpus': 0, 'dependencies': [],
+        'placement_clusters': ['ai2/saturn', 'ai2/neptune'],
+        'allow_gpu_reservation': True, 'receipt': {'workload_id': 'old-phobos'}}}}
+    with pytest.raises(ValueError, match='confirmed failed'):
+        campaign.retry_node(state, 'bpe')
+    state['nodes']['bpe']['status'] = 'canceled'
+    campaign.retry_node(state, 'bpe')
+    node = state['nodes']['bpe']
+    assert node['previous_attempts'][0]['receipt']['workload_id'] == 'old-phobos'
+    assert node['placement_clusters'] == ['ai2/saturn', 'ai2/neptune']
+    assert node['allow_gpu_reservation'] and node['status'] == 'pending'
+    assert node['name'] == 'move-bpe-retry1'
+
+
 def test_download_excludes_only_explicit_allocation_rejections(tmp_path):
     from types import SimpleNamespace
     from beaker.exceptions import BeakerError, BeakerPermissionsError
