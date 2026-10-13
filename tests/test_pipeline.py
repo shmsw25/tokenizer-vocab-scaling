@@ -57,6 +57,17 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
+def test_gpu_placement_uses_only_h100_hosts_from_requested_cluster():
+    spec = submit.make_spec(args_for('train-model', '--vocab-size', '32000'))
+    submit.constrain_h100_hosts(spec, ['jupiter-h100-1', 'jupiter-h100-2'])
+    task = submit.parse_spec(spec).to_json()['tasks'][0]
+    assert task['constraints'] == {'hostname': ['jupiter-h100-1', 'jupiter-h100-2']}
+    assert task['resources']['gpuCount'] == 8
+    assert task['context']['minRuntime'] == 0
+    with pytest.raises(ValueError, match='No qualifying'):
+        submit.constrain_h100_hosts(spec, [])
+
+
 @pytest.mark.parametrize('stage', ['train-tokenizer', 'tokenize-data', 'convert-model'])
 def test_cpu_multi_cluster_placement_keeps_zero_gpu_request(stage):
     node = {'stage': stage, 'expected_gpus': 0,

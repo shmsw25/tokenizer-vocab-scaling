@@ -179,6 +179,17 @@ def save_spec(spec, destination):
         destination.write_text(json.dumps(spec, indent=2) + '\n')
 
 
+def constrain_h100_hosts(spec, hostnames):
+    # Hosts were discovered only inside the requested cluster. Beaker rejects
+    # simultaneous cluster and hostname constraints, so the host list carries
+    # both the cluster restriction and the H100 restriction.
+    if not hostnames:
+        raise ValueError('No qualifying H100 hosts')
+    constraints = spec['tasks'][0]['constraints']
+    constraints.pop('cluster', None)
+    constraints['hostname'] = hostnames
+
+
 def create_experiment(beaker, args, workspace, name, spec):
     from beaker.exceptions import BeakerError
     import re
@@ -264,7 +275,7 @@ def main():
             )
             spec = make_spec(args, dataset.id, revision, resolved_clusters)
             if hostnames:
-                spec['tasks'][0]['constraints']['hostname'] = hostnames
+                constrain_h100_hosts(spec, hostnames)
             workload = create_experiment(b, args, workspace, name, spec)
             if args.receipt:
                 from pipeline import write_json
