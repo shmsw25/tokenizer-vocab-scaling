@@ -9,7 +9,7 @@ import sys
 import tempfile
 import uuid
 
-from pipeline import REPO, STAGES, MODEL_STAGES, add_stage_arguments, validate_args
+from pipeline import REPO, STAGES, MODEL_STAGES, RAW_STAGES, add_stage_arguments, validate_args
 
 # Existing ai2/flex2 image, verified by Beaker image lookup on 2026-10-12.
 GPU_IMAGE = '01KAXVQ0YN242MQ9YEQDQQK512'  # tylerr/olmo-core-tch280cu128-2025-11-25
@@ -17,6 +17,7 @@ CPU_IMAGE = 'python:3.12-slim-bookworm'
 WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
 RESOURCES = {
     'download-data': (4, '32 GiB'),
+    'sample-pool': (4, '32 GiB'),
     'train-tokenizer': (64, '128 GiB'),
     'tokenize-data': (16, '64 GiB'),
     'train-model': (32, '256 GiB'),
@@ -36,7 +37,7 @@ def parser():
         s = sub.add_parser(stage)
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
-        default_cluster = (None if stage == 'download-data' else
+        default_cluster = (None if stage in RAW_STAGES else
                            'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos')
         s.add_argument('--cluster', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
                        help='Optional placement restriction; download defaults to all eligible Weka clusters')
@@ -56,7 +57,9 @@ def parser():
 
 def stage_arguments(args):
     result = [args.stage, '--root', str(args.root)]
-    if args.stage != 'download-data':
+    if args.stage == 'sample-pool':
+        result += ['--data-size', args.data_size, '--sampling-seed', str(args.sampling_seed)]
+    elif args.stage != 'download-data':
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
     if args.stage in MODEL_STAGES:
         for name in ('model_size', 'gpus', 'micro_batch_size', 'batch_size',
@@ -182,7 +185,7 @@ def create_experiment(beaker, args, workspace, name, spec):
                                   r'for workloads with a minimum runtime', str(error)) or
                         re.fullmatch(r'task "[^"]+": cluster "([^"]+)" doesn\'t allow tasks', str(error)))
             clusters = spec['tasks'][0]['constraints']['cluster']
-            if args.stage != 'download-data' or args.cluster or not rejected or rejected[1] not in clusters:
+            if args.stage not in RAW_STAGES or args.cluster or not rejected or rejected[1] not in clusters:
                 raise
             clusters.remove(rejected[1])
             print(f'Excluded {rejected[1]}: {error}', flush=True)
@@ -235,7 +238,7 @@ def main():
                              == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
                 if not hostnames:
                     raise RuntimeError('No qualifying H100 nodes in the requested cluster')
-            elif args.stage != 'download-data' and cluster.node_shape.gpu_count:
+            elif args.stage not in RAW_STAGES and cluster.node_shape.gpu_count:
                 raise ValueError('CPU stages require a CPU-only cluster to avoid reserving GPU slots')
             dataset = b.dataset.create(
                 f'tokenizer-code-{revision[:12]}-{uuid.uuid4().hex[:8]}', archive, bootstrap,

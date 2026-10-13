@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+from decimal import Decimal
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
@@ -19,7 +20,10 @@ REFERENCE_VOCAB = 32000
 WARMUP_SEQUENCES = 24 * 1024
 MODEL_MICROBATCHES = {'small': 32, 'medium': 16, 'medium_large': 8}
 MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
-STAGES = ('download-data', 'train-tokenizer', 'tokenize-data', *MODEL_STAGES)
+RAW_STAGES = ('download-data', 'sample-pool')
+POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
+TRAINING_POOLS = ('5GB', '10GB', '20GB')
+STAGES = (*RAW_STAGES, 'train-tokenizer', 'tokenize-data', *MODEL_STAGES)
 EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
@@ -37,11 +41,24 @@ def positive_float(value):
     return value
 
 
+def data_size(value):
+    if not re.fullmatch(r'\d+(?:\.\d+)?GB', value):
+        raise argparse.ArgumentTypeError('use a positive size in GB, e.g. 2.5GB')
+    number = Decimal(value[:-2])
+    if number <= 0:
+        raise argparse.ArgumentTypeError('data size must be positive')
+    return f'{number.normalize():f}GB'
+
+
 def add_stage_arguments(parser, stage):
     parser.add_argument('--root', type=Path, default=Path(DEFAULT_ROOT))
-    if stage != 'download-data':
+    if stage == 'sample-pool':
+        parser.add_argument('--data-size', required=True, type=data_size)
+        parser.add_argument('--sampling-seed', type=int, default=42,
+                            help='Base seed; a distinct deterministic seed is derived for each size')
+    elif stage != 'download-data':
         parser.add_argument('--vocab-size', required=True, type=positive_int)
-        parser.add_argument('--data-size', choices=('100GB', '250GB'), default='100GB')
+        parser.add_argument('--data-size', type=data_size, default='100GB')
     if stage in MODEL_STAGES:
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
         parser.add_argument('--gpus', type=positive_int, default=8)
@@ -64,6 +81,10 @@ def validate_args(args):
     if not args.root.is_absolute():
         raise ValueError('--root must be absolute')
     if args.stage == 'download-data':
+        return
+    if args.stage == 'sample-pool':
+        if Decimal(args.data_size[:-2]) >= 100:
+            raise ValueError('Subsample size must be less than the 100GB parent')
         return
     if args.vocab_size < 257:
         raise ValueError('--vocab-size must include 256 byte symbols and EOS (at least 257)')
@@ -162,6 +183,7 @@ def download_data(args):
 def train_tokenizer(args):
     target = tokenizer_file(args)
     signature = raw_signature(raw_file(args))
+    pool = pool_provenance(args)
     marker = target.with_name('pipeline.json')
     with lock(args.root, f'tokenizer-{dataset_name(args)}'):
         if target.exists():
@@ -177,7 +199,8 @@ def train_tokenizer(args):
              '--vocab-size', args.vocab_size, '--output', staging, '--overwrite'])
         if raw_signature(raw_file(args)) != signature:
             raise ValueError('Raw text changed during tokenizer training')
-        write_json(marker, {'raw': signature, 'vocab_size': args.vocab_size, 'sha256': digest(staging)})
+        write_json(marker, {'raw': signature, 'vocab_size': args.vocab_size,
+                            'sha256': digest(staging), 'pool': pool})
         staging.replace(target)
 
 
@@ -199,6 +222,7 @@ def completed_meta(directory, expected_vocab):
 def tokenize_data(args):
     target = tokenized_dir(args)
     expected = {'raw': raw_signature(raw_file(args)), 'tokenizer_sha256': digest(tokenizer_file(args))}
+    pool_provenance(args)
     marker = target / 'pipeline.json'
     with lock(args.root, f'tokenized-{dataset_name(args)}'):
         if (target / 'meta.json').exists():
@@ -272,6 +296,8 @@ def training_plan(args):
         'gpus': args.gpus, 'tokenizer_sha256': digest(data / 'tokenizer.json'),
         'raw': raw_signature(raw_file(args)),
     }
+    if pool := pool_provenance(args):
+        cfg['pipeline']['pool'] = pool
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
     # AdamW uses one default parameter group: embeddings receive the same WD.
     tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
@@ -302,7 +328,7 @@ def train_model(args):
              '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}'])
         checkpoint = latest_checkpoint(output)
         write_json(output / 'training_summary.json', {
-            'model_size': args.model_size, 'vocab_size': args.vocab_size,
+            'model_size': args.model_size, 'vocab_size': args.vocab_size, 'data_size': args.data_size,
             'model_dir': str(output), 'checkpoint': str(checkpoint), 'config': cfg,
             'elapsed_seconds_this_attempt': time.monotonic() - started,
             'training': read_json(output / 'training_metrics.json'),
@@ -346,10 +372,13 @@ def convert_model(args):
         import eval_suite
         eval_suite.DOLMA_DATA_FILE = raw_file(args)
         eval_suite.DOLMA_SAMPLE_DIR = args.root / '.cache/dolma_samples'
+        pool = pool_provenance(args)
+        eval_suite.DOLMA_HELDOUT_FILE = Path(pool['heldout_file']) if pool else None
         sample = eval_suite.dolma_sample()
         write_json(output / 'conversion_summary.json', {
             'exported': str(exported), 'conversion': conversion,
             'heldout_documents': len(sample),
+            'heldout_file': pool['heldout_file'] if pool else None,
         })
 
 
@@ -360,18 +389,20 @@ def evaluate_model(args):
         directory = output / 'evaluation'
         directory.mkdir(parents=True, exist_ok=True)
         metrics = {}
+        pool = pool_provenance(args)
+        heldout_args = ['--dolma-heldout-file', pool['heldout_file']] if pool else []
         for name in args.evals:
             result = directory / f'{name}.json'
             if not result.exists():
                 run([sys.executable, 'eval/eval_suite.py', exported, name,
                      '--dolma-sample-dir', args.root / '.cache/dolma_samples',
-                     '--output-dir', directory])
+                     '--output-dir', directory, *heldout_args])
             value = read_json(result)
             if value['eval'] != name or value['model_checkpoint'] != str(exported):
                 raise ValueError(f'Evaluation provenance mismatch: {result}')
             metrics[name] = value
         write_json(output / 'evaluation_summary.json', {
-            'model_size': args.model_size, 'vocab_size': args.vocab_size,
+            'model_size': args.model_size, 'vocab_size': args.vocab_size, 'data_size': args.data_size,
             'checkpoint': str(checkpoint), 'exported': str(exported), 'metrics': metrics,
             'training': read_json(output / 'training_summary.json'),
         })
@@ -382,6 +413,8 @@ def publish_summary(args):
     summary = {'stage': args.stage, 'revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
     if args.stage == 'download-data':
         summary['data'] = read_json(args.root / 'raw_text/provenance.json')
+    elif args.stage == 'sample-pool':
+        summary['pool'] = pool_provenance(args)
     elif args.stage == 'train-tokenizer':
         summary['tokenizer'] = read_json(tokenizer_file(args).with_name('pipeline.json'))
     elif args.stage == 'tokenize-data':
@@ -396,6 +429,23 @@ def publish_summary(args):
     return summary
 
 
+def pool_provenance(args):
+    """Require a completed, immutable sample manifest for the new smaller pools."""
+    if Decimal(args.data_size[:-2]) >= 100:
+        return None
+    info = read_json(raw_file(args).with_name('pool.json'))
+    if info['output'] != raw_signature(raw_file(args)):
+        raise ValueError('Pool contents no longer match their manifest')
+    if digest(Path(info['heldout_file'])) != info['heldout_sha256']:
+        raise ValueError('Shared held-out documents changed')
+    return info
+
+
+def sample_pool(args):
+    from sample_pool import sample_pool as sample
+    sample(args.root, args.data_size, args.sampling_seed)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='stage', required=True)
@@ -404,7 +454,7 @@ def main():
     args = parser.parse_args()
     validate_args(args)
     args.root.mkdir(parents=True, exist_ok=True)
-    {'download-data': download_data, 'train-tokenizer': train_tokenizer,
+    {'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
      'tokenize-data': tokenize_data, 'train-model': train_model,
      'convert-model': convert_model, 'evaluate-model': evaluate_model}[args.stage](args)
     publish_summary(args)

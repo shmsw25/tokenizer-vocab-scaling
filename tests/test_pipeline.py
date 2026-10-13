@@ -18,7 +18,8 @@ def args_for(stage, *extra):
 
 @pytest.mark.parametrize('stage', pipeline.STAGES)
 def test_beaker_resources_and_schema(stage):
-    extra = [] if stage == 'download-data' else ['--vocab-size', '48000']
+    extra = ([] if stage == 'download-data' else ['--data-size', '2.5GB']
+             if stage == 'sample-pool' else ['--vocab-size', '48000'])
     args = args_for(stage, *extra)
     pipeline.validate_args(args)
     spec = submit.make_spec(args)
@@ -29,7 +30,7 @@ def test_beaker_resources_and_schema(stage):
     if stage == 'train-model':
         assert task['context']['minRuntime'] == '0s'
         assert 'preemptible' not in task['context']
-    if stage == 'download-data':
+    if stage in pipeline.RAW_STAGES:
         assert args.cluster is None
         assert task['constraints']['cluster'] == [submit.WEKA_CLUSTERS_PLACEHOLDER]
         resolved = submit.make_spec(args, resolved_clusters=['ai2/ceres', 'ai2/phobos'])
@@ -40,7 +41,9 @@ def test_beaker_resources_and_schema(stage):
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]
-    if stage != 'download-data':
+    if stage == 'sample-pool':
+        assert task['arguments'][3:] == ['--data-size', '2.5GB', '--sampling-seed', '42']
+    elif stage != 'download-data':
         assert task['arguments'][3:7] == ['--vocab-size', '48000', '--data-size', '100GB']
     assert '--seq-length' not in task['arguments']
 
@@ -79,8 +82,8 @@ def test_download_excludes_only_explicit_allocation_rejections(tmp_path):
         submit.create_experiment(client, args, None, 'test', spec)
 
 
-def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split):
-    args = args_for('train-model', '--root', str(tmp_path), '--vocab-size', str(vocab))
+def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split, size='100GB'):
+    args = args_for('train-model', '--root', str(tmp_path), '--vocab-size', str(vocab), '--data-size', size)
     raw = pipeline.raw_file(args)
     raw.parent.mkdir(parents=True, exist_ok=True)
     if not raw.exists():
@@ -204,30 +207,63 @@ def test_wsd_and_patched_embeddings():
 
 
 def test_campaign_dependencies_retry_and_report(tmp_path):
-    state = {'campaign': 'test', 'nodes': campaign.make_nodes([32000, 64000, 128000],
-                                                          ['small', 'medium', 'medium_large'])}
+    state = {'campaign': 'test', 'pool_sizes': list(pipeline.POOL_SIZES),
+             'training_pools': list(pipeline.TRAINING_POOLS),
+             'nodes': campaign.make_nodes([32000, 64000, 128000], ['small', 'medium', 'medium_large'])}
     nodes = state['nodes']
-    assert len([n for n in nodes.values() if n['stage'] == 'train-model']) == 9
+    assert len(nodes) == 115
+    assert len([n for n in nodes.values() if n['stage'] == 'train-model']) == 27
+    assert len([n for n in nodes.values() if n['stage'] == 'train-tokenizer']) == 18
+    assert len([n for n in nodes.values() if n['stage'] == 'tokenize-data']) == 9
     assert campaign.ready_nodes(state) == ['download']
     nodes['download']['status'] = 'succeeded'
-    assert set(campaign.ready_nodes(state)) == {'bpe-32000', 'bpe-64000', 'bpe-128000'}
-    nodes['bpe-64000']['status'] = 'succeeded'
-    nodes['tokens-64000']['status'] = 'succeeded'
+    sample_keys = {f'sample-{campaign.size_key(s)}' for s in pipeline.POOL_SIZES}
+    assert set(campaign.ready_nodes(state)) == sample_keys
+    for key in sample_keys - {'sample-80gb'}:
+        nodes[key]['status'] = 'succeeded'
+    assert not any(key.startswith('bpe-') for key in campaign.ready_nodes(state))
+    nodes['sample-80gb']['status'] = 'succeeded'
+    assert len(campaign.ready_nodes(state)) == 18
+    nodes['bpe-5gb-64000']['status'] = 'succeeded'
+    nodes['tokens-5gb-64000']['status'] = 'succeeded'
     assert not any(key.startswith('train-') for key in campaign.ready_nodes(state))
-    nodes['tokens-32000']['status'] = 'succeeded'
-    assert 'train-small-64000' in campaign.ready_nodes(state)
-    nodes['train-small-64000'].update(status='failed', receipt={'workload_id': 'old'})
-    campaign.retry_node(state, 'train-small-64000')
-    assert nodes['train-small-64000']['previous_attempts'][0]['receipt']['workload_id'] == 'old'
-    assert nodes['train-small-64000']['name'].endswith('-retry1')
-    assert 'receipt' not in nodes['train-small-64000']
+    nodes['tokens-10gb-32000']['status'] = 'succeeded'
+    assert 'train-small-5gb-64000' not in campaign.ready_nodes(state)
+    nodes['tokens-5gb-32000']['status'] = 'succeeded'
+    assert 'train-small-5gb-64000' in campaign.ready_nodes(state)
+    nodes['train-small-5gb-64000'].update(status='failed', receipt={'workload_id': 'old'})
+    campaign.retry_node(state, 'train-small-5gb-64000')
+    assert nodes['train-small-5gb-64000']['previous_attempts'][0]['receipt']['workload_id'] == 'old'
+    assert nodes['train-small-5gb-64000']['name'].endswith('-retry1')
+    assert 'receipt' not in nodes['train-small-5gb-64000']
     with pytest.raises(ValueError, match='confirmed failed'):
-        campaign.retry_node(state, 'train-small-64000')
+        campaign.retry_node(state, 'train-small-5gb-64000')
     report = tmp_path / 'report.html'
     campaign.render_report(state, report)
     assert not state['complete']
     assert 'In progress' in report.read_text()
     assert 'Dolma BPB' in report.read_text()
+    assert '<th>Pool</th>' in report.read_text() and '2.5GB' in report.read_text()
+
+
+def test_campaign_migration_preserves_parent_and_refuses_active_jobs():
+    state = {'nodes': {'download': {'stage': 'download-data', 'status': 'running',
+                                   'receipt': {'workload_id': 'keep-me'}, 'previous_attempts': ['old']},
+                       'bpe-32000': {'stage': 'train-tokenizer', 'status': 'pending'}},
+             'submission_hold': 'Updating plan'}
+    parent = copy.deepcopy(state['nodes']['download'])
+    submitted = copy.deepcopy(state)
+    submitted['nodes']['bpe-32000']['name'] = 'uncertain-outcome'
+    with pytest.raises(ValueError, match='submitted legacy'):
+        campaign.migrate_pools(submitted, [32000, 64000, 128000], list(pipeline.MODEL_MICROBATCHES),
+                               pipeline.POOL_SIZES, pipeline.TRAINING_POOLS)
+    campaign.migrate_pools(state, [32000, 64000, 128000], list(pipeline.MODEL_MICROBATCHES),
+                           pipeline.POOL_SIZES, pipeline.TRAINING_POOLS)
+    assert state['nodes']['download'] == parent
+    assert 'bpe-32000' in state['plan_history'][0]['nodes']
+    assert 'submission_hold' not in state
+    with pytest.raises(ValueError, match='already migrated'):
+        campaign.migrate_pools(state, [32000], ['small'], pipeline.POOL_SIZES, pipeline.TRAINING_POOLS)
 
 
 def test_monitor_eta_uses_observed_progress():

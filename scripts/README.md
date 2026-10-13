@@ -1,7 +1,7 @@
 # Jupiter / Weka / Beaker pipeline
 
 These scripts submit **one stage per Beaker experiment** in `ai2/flex2`.
-Download/sample jobs can run on **any accessible cluster with Weka access**;
+Download/sample jobs (including each smaller pool) can run on **any accessible cluster with Weka access**;
 other CPU stages use `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
 Downloading/sampling, tokenizer training, and tokenization explicitly request
 **zero GPUs**. Beaker may reserve a GPU slot for a zero-GPU download on GPU
@@ -52,20 +52,26 @@ root and required subdirectories when the first job runs.
 tokenizer_project/
   raw_text/250GB/dolma3_250gb.jsonl
   raw_text/100GB/dolma3_100gb.jsonl
-  tokenizers/default_100GB_<vocab_size>/tokenizer.json
-  tokenized_data/default_100GB_<vocab_size>/
+  raw_text/<data_size>/dolma3_<data_size_lowercase>.jsonl
+  raw_text/<data_size>/pool.json
+  raw_text/heldout/dolma3_100gb_shared_1000.json
+  tokenizers/default_<data_size>_<vocab_size>/tokenizer.json
+  tokenized_data/default_<data_size>_<vocab_size>/
     train.bin
     eval.bin
     tokenizer.json
     meta.json
     pipeline.json
-  models/<model_size>/default_100GB_<vocab_size>/
+  models/<model_size>/default_<data_size>_<vocab_size>/
     wsd_lr<lr>_wd<wd>_bs<batch>_seq<length>_seed<seed>_wt_EmbedWD_<hash>/
 ```
 
-All vocabulary-dependent stages default to `--data-size 100GB`. The optional
-`--data-size 250GB` switches their inputs and output names together; it requires
-a 32k reference tokenized from that same 250GB corpus. `--root` may override the
+The campaign trains BPE vocabularies 32000/64000/128000 separately on **2.5GB,
+5GB, 10GB, 20GB, 40GB, and 80GB** (18 tokenizers). It trains the three model
+sizes only on **5GB, 10GB, and 20GB** (27 one-epoch models).
+Pass `--data-size` to select a pool; standalone commands retain the legacy
+100GB default. Every model requires its own pool's 32k reference tokenization.
+`--root` may override the
 project directory, but Beaker submissions require it to stay inside the Weka
 mount. Model config names currently available are `small`, `medium`, and
 `medium_large`. The campaign accepts model sizes and vocabulary sizes as arguments;
@@ -120,30 +126,61 @@ file; after a failed sampling attempt, inspect it and move it aside before
 rerunning. A truncated download line also requires inspection before resuming.
 A filesystem lock prevents concurrent download/sample writers.
 
-## 2. Build the 32k reference (CPU only)
+## 2. Create independent smaller pools (CPU only)
+
+After the current 100GB job succeeds, submit separate jobs using the same
+parameterized command:
 
 ```bash
-scripts/submit_train_tokenizer.sh --vocab-size 32000
-# After tokenizer training succeeds:
-scripts/submit_tokenize_data.sh --vocab-size 32000
+for DATA_SIZE in 2.5GB 5GB 10GB 20GB 40GB 80GB; do
+  python scripts/submit.py sample-pool --data-size "$DATA_SIZE"
+done
 ```
 
-Both use the uniform 100GB file. The reference is required even when you only
+The campaign does this automatically. Each job explicitly requests `gpuCount: 0`,
+4 CPUs and 32 GiB RAM, and uses any eligible Weka cluster. The parent 100GB file
+is reused without another download. Each size uses a distinct seed derived from
+the size and base seed 42; these are **independent samples, not nested samples**.
+Each sample selects exactly `floor(eligible_records * size_GB / 100)` records
+uniformly without replacement, preserving source order. GB sizes are approximate
+UTF-8 text sizes, not JSONL disk bytes or promised token budgets. The manifest
+records exact document counts, text bytes, source/output hashes and seeds.
+Token counts are measured later for the three model-training pools.
+
+All six jobs exclude the same 1,000 randomly selected parent record indices
+(fixed seed 20261012) and publish the same shared Dolma evaluation set. This
+keeps evaluation records outside every smaller pool, including tokenizer
+training. Independent pools can overlap with one another. Sampling uses bounded
+memory and `.part` outputs; partial files are preserved and require inspection
+before retrying. Completed pools are reused only with matching provenance.
+All six sampling jobs must succeed before any of the 18 tokenizer jobs starts.
+
+## 3. Build each pool's 32k reference (CPU only)
+
+```bash
+DATA_SIZE=5GB
+scripts/submit_train_tokenizer.sh --data-size "$DATA_SIZE" --vocab-size 32000
+# After tokenizer training succeeds:
+scripts/submit_tokenize_data.sh --data-size "$DATA_SIZE" --vocab-size 32000
+```
+
+Both use the selected pool. Its reference is required even when you only
 plan to train a model with a different vocabulary size. Model training does not
 train or tokenize a missing reference inside a GPU allocation.
 
-## 3. Build any target vocabulary (CPU only)
+## 4. Build any target vocabulary (CPU only)
 
 ```bash
 VOCAB_SIZE=48000
-scripts/submit_train_tokenizer.sh --vocab-size "$VOCAB_SIZE"
+scripts/submit_train_tokenizer.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE"
 # After tokenizer training succeeds:
-scripts/submit_tokenize_data.sh --vocab-size "$VOCAB_SIZE"
+scripts/submit_tokenize_data.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE"
 ```
 
 Vocabulary size is an integer argument, not a hardcoded list. The only special
 size is the required 32000-token context reference. If the target is 32000,
-step 2 already produced these artifacts.
+the reference commands already produced these artifacts. Only 5GB, 10GB, and
+20GB need tokenized model-training streams in the current campaign.
 
 Tokenizer training requests 64 CPUs and 128 GiB RAM; tokenization requests 16
 CPUs and 64 GiB RAM. `RAYON_NUM_THREADS` follows the requested CPU count. The
@@ -153,15 +190,15 @@ are reused only when their provenance agrees. A tokenization attempt without
 `meta.json` is incomplete and restarts from the beginning under a writer lock.
 Do not modify published raw files, tokenizers, or tokenized streams in place.
 
-## 4. Train a model (GPU)
+## 5. Train a model (GPU)
 
 After target and 32k tokenization both succeed:
 
 ```bash
-scripts/submit_train_model.sh --vocab-size "$VOCAB_SIZE" --model-size small
+scripts/submit_train_model.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size small
 
 # Example override; still 256 global sequences per optimizer step:
-scripts/submit_train_model.sh --vocab-size "$VOCAB_SIZE" --model-size medium_large \
+scripts/submit_train_model.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size medium_large \
   --gpus 8 --micro-batch-size 8 --batch-size 256 --learning-rate 1e-4
 ```
 
@@ -214,19 +251,19 @@ checkpoint there. Changed LR/batch/schedule/configuration produces a different
 path. A writer lock prevents simultaneous training into the same directory.
 The exact submitted commit is recorded in Beaker and `source_revisions.txt`.
 
-## 5. Convert checkpoints and evaluate
+## 6. Convert checkpoints and evaluate
 
 ```bash
 # After training succeeds; pass the same model/training arguments to identify its output:
-python scripts/submit.py convert-model --vocab-size "$VOCAB_SIZE" --model-size small
+python scripts/submit.py convert-model --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size small
 # After conversion succeeds:
-python scripts/submit.py evaluate-model --vocab-size "$VOCAB_SIZE" --model-size small
+python scripts/submit.py evaluate-model --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size small
 ```
 
 Conversion requests **zero GPUs on Phobos**, uses the training dependency image,
 exports the final completed checkpoint to Hugging Face format, and verifies
-numerical agreement with EMO before publishing it. It also prepares the shared
-1,000-document held-out Dolma evaluation sample on CPUs. Evaluation requests
+numerical agreement with EMO before publishing it. It verifies the shared
+1,000-document held-out Dolma sample reserved during pool sampling. Evaluation requests
 **one H100** and runs BLiMP, ARC-Easy, HellaSwag, PIQA, and Dolma BPB. The repository
 uses byte-normalized downstream scoring, including BLiMP, so these accuracy
 numbers should not be conflated with standard benchmark implementations.
@@ -235,8 +272,8 @@ model directory. Small manifests are also exported through Beaker `/results/summ
 
 ## Run and monitor the campaign
 
-The controller accepts arbitrary vocabularies (including the required 32000
-reference) and the three model sizes. It saves its state and HTML report under
+The controller accepts `--pool-sizes`, `--training-pools`, arbitrary vocabularies
+(including the required 32000 reference), and the three model sizes. It saves its state and HTML report under
 ignored `.build/`, so monitoring does not dirty source snapshots. Initialize
 **once**; adopting a receipt reuses an existing download instead of starting another.
 
@@ -251,9 +288,13 @@ python scripts/campaign.py --advance
 python scripts/campaign.py --offline
 ```
 
-The graph contains one download/sample job, three tokenizer jobs, three
-tokenization jobs, nine one-epoch training jobs, nine CPU conversions, and nine
-evaluations. It records intended names before submission and recovers uncertain
+The graph contains one original download/sample job, six independent pool
+sampling jobs, 18 tokenizer jobs, nine tokenization jobs, 27 one-epoch training
+jobs, 27 CPU conversions, and 27 evaluations (115 stages).
+`--migrate-pools` upgrades the old unsubmitted 100GB plan while preserving its
+current download receipt and history; it refuses to discard submitted downstream
+jobs or migrate twice. Do not reinitialize an existing campaign.
+It records intended names before submission and recovers uncertain
 submission outcomes by looking up those names. No live training job is restarted
 or duplicated. Failed jobs remain visible for diagnosis; after fixing the cause,
 `--advance --retry-node NODE_KEY` explicitly retries a confirmed failure, resuming
@@ -263,8 +304,9 @@ Each poll saves job status, observed GPU assignments, log tails, configurations,
 result manifests, and current ETAs. Download ETA uses recent observed text-byte
 throughput and excludes the subsequent sampling pass; model ETA comes from EMO.
 Queue wait and unmeasured stages are reported as unknown. The HTML report at
-`.build/report.html` is marked complete only after all nine evaluations succeed
-and all five metrics are available. It embeds downloadable JSON provenance.
+`.build/report.html` is marked complete only after all stages succeed and all
+27 evaluations have all five metrics. Results include pool size and a separate
+18-tokenizer status table. It embeds downloadable JSON provenance.
 The controller is a single polling command, not its own background scheduler;
 the requested hourly chat heartbeat invokes it and reports progress.
 
@@ -273,10 +315,11 @@ the requested hourly chat heartbeat invokes it and reports progress.
 Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 `--priority`, `--image`, and `--name`. Workspace and cluster can also default
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Priority defaults to `normal`;
-jobs are non-preemptible unless `--preemptible` is supplied. CPU scripts expose
+model-training jobs always use `minRuntime: 0s`. Other stages are non-preemptible
+unless `--preemptible` is supplied. CPU scripts expose
 no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
 constrain placement to H100 nodes in the requested cluster. GPU clusters use
-whole GPU slots even for `gpuCount: 0`. The download permits this scheduler
+whole GPU slots even for `gpuCount: 0`. Download and raw sampling permit this scheduler
 reservation to broaden placement; the monitor reports requested and assigned
 counts separately. Other CPU stages use Phobos and reject GPU-cluster overrides.
 GPU training is single-node;

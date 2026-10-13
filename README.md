@@ -18,8 +18,10 @@ files, where every line is `{"text": "one document", ...}`.
 ## Setup
 
 For the Jupiter/Weka workflow, see **[scripts/README.md](scripts/README.md)**.
-It submits separate CPU data/tokenizer jobs and GPU model jobs to Beaker,
-defaults to the uniform 100GB sample, and always matches context to 32k.
+It reuses a uniform 100GB parent to create six independent smaller pools,
+trains 18 tokenizers, and submits 27 one-epoch model runs on 5GB/10GB/20GB.
+CPU data/tokenizer jobs and GPU model jobs run separately in Beaker; context
+length always matches the selected pool's 32k tokenizer.
 
 ```bash
 conda create -n tokenizer-scaling python=3.12 && conda activate tokenizer-scaling

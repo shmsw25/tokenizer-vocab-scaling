@@ -402,6 +402,7 @@ def document_nll(model, tokenizer, text):
 
 DOLMA_DATA_FILE = Path(__file__).resolve().parent.parent / 'data' / 'dolma3_250gb.jsonl'
 DOLMA_SAMPLE_DIR = Path(__file__).resolve().parent / '.cache' / 'dolma_samples'
+DOLMA_HELDOUT_FILE = None
 
 
 def dolma_data_file(checkpoint):
@@ -424,6 +425,11 @@ def dolma_data_file(checkpoint):
 
 def dolma_sample():
     """Cache a uniform reservoir sample of 1,000 nonempty held-out documents."""
+    if DOLMA_HELDOUT_FILE is not None:
+        documents = json.loads(DOLMA_HELDOUT_FILE.read_text())['documents']
+        if len(documents) != 1000 or len({doc['index'] for doc in documents}) != 1000:
+            raise ValueError('Expected 1,000 unique shared held-out documents')
+        return documents
     stat = DOLMA_DATA_FILE.stat()
     identity = [str(DOLMA_DATA_FILE.resolve()), stat.st_size, stat.st_mtime_ns,
                 'heldout-0.01-seed42-reservoir-seed42-n1000-v1']
@@ -481,6 +487,7 @@ def eval_dolma_bpb(model, tokenizer):
         raise ValueError('Dolma holdout contains no nonempty text')
     return {'bpb': total_nll / (math.log(2) * total_bytes),
             'data_file': str(DOLMA_DATA_FILE),
+            'heldout_file': str(DOLMA_HELDOUT_FILE) if DOLMA_HELDOUT_FILE else None,
             'documents': documents, 'bytes': total_bytes, 'tokens': tokens,
             'empty_documents': empty_documents}
 
@@ -547,16 +554,19 @@ EVALS = {'blimp': eval_blimp, 'arc_easy': eval_arc_easy,
 
 
 def main():
-    global DOLMA_DATA_FILE, DOLMA_SAMPLE_DIR, NEMOTRON_DATA_FILE, NEMOTRON_LANGUAGES
+    global DOLMA_DATA_FILE, DOLMA_SAMPLE_DIR, DOLMA_HELDOUT_FILE, NEMOTRON_DATA_FILE, NEMOTRON_LANGUAGES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model_checkpoint', help='Local Hugging Face or native trainer_mixture checkpoint directory')
     parser.add_argument('evals', help='Comma-separated eval names: ' + ','.join(EVALS))
     parser.add_argument('--nemotron-file', type=Path, default=NEMOTRON_DATA_FILE)
     parser.add_argument('--nemotron-languages', default=','.join(NEMOTRON_LANGUAGES))
     parser.add_argument('--dolma-sample-dir', type=Path, default=DOLMA_SAMPLE_DIR)
+    parser.add_argument('--dolma-heldout-file', type=Path,
+                        help='Shared evaluation documents excluded from every training pool')
     parser.add_argument('--output-dir', type=Path, help='Atomically save each completed evaluation')
     args = parser.parse_args()
     DOLMA_SAMPLE_DIR = args.dolma_sample_dir.resolve()
+    DOLMA_HELDOUT_FILE = args.dolma_heldout_file.resolve() if args.dolma_heldout_file else None
     NEMOTRON_DATA_FILE = args.nemotron_file.resolve()
     NEMOTRON_LANGUAGES = tuple(args.nemotron_languages.split(','))
     if not all(NEMOTRON_LANGUAGES) or len(set(NEMOTRON_LANGUAGES)) != len(NEMOTRON_LANGUAGES):

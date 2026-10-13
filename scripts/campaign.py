@@ -16,7 +16,8 @@ import subprocess
 import sys
 import urllib.request
 
-from pipeline import DEFAULT_ROOT, EVALS, MODEL_MICROBATCHES, REPO, read_json, write_json
+from pipeline import (DEFAULT_ROOT, EVALS, MODEL_MICROBATCHES, POOL_SIZES, TRAINING_POOLS,
+                      RAW_STAGES, REPO, data_size, read_json, write_json)
 
 TERMINAL = {'succeeded', 'failed', 'canceled'}
 ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
@@ -26,35 +27,71 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def make_nodes(vocabs, models):
+def size_key(size):
+    return size.lower().replace('.', 'p')
+
+
+def make_nodes(vocabs, models, pools=POOL_SIZES, training_pools=TRAINING_POOLS):
     if 32000 not in vocabs:
         raise ValueError('Include 32000 as the shared context reference')
+    if not pools or not set(training_pools) <= set(pools):
+        raise ValueError('Every model-training pool must also be a tokenizer pool')
+    if len(set(pools)) != len(pools) or len(set(training_pools)) != len(training_pools):
+        raise ValueError('Pool lists must not contain duplicates')
     nodes = {}
 
-    def add(key, stage, dependencies, vocab=None, model=None):
+    def add(key, stage, dependencies, vocab=None, model=None, pool=None):
         arguments = [stage, '--root', DEFAULT_ROOT]
+        if stage == 'sample-pool':
+            arguments += ['--data-size', pool, '--sampling-seed', '42']
         if vocab is not None:
-            arguments += ['--vocab-size', str(vocab), '--data-size', '100GB']
+            arguments += ['--vocab-size', str(vocab), '--data-size', pool]
         if model is not None:
             arguments += ['--model-size', model, '--gpus', '8', '--batch-size', '256',
                           '--micro-batch-size', str(MODEL_MICROBATCHES[model]), '--epochs', '1']
         nodes[key] = {'stage': stage, 'dependencies': dependencies, 'arguments': arguments,
-                      'vocab_size': vocab, 'model_size': model, 'status': 'pending',
+                      'vocab_size': vocab, 'model_size': model, 'data_size': pool, 'status': 'pending',
                       'expected_gpus': 8 if stage == 'train-model' else int(stage == 'evaluate-model')}
 
     add('download', 'download-data', [])
-    for vocab in vocabs:
-        add(f'bpe-{vocab}', 'train-tokenizer', ['download'], vocab)
-        add(f'tokens-{vocab}', 'tokenize-data', [f'bpe-{vocab}'], vocab)
-        for model in models:
-            suffix = f'{model}-{vocab}'
-            add(f'train-{suffix}', 'train-model', sorted({f'tokens-{vocab}', 'tokens-32000'}), vocab, model)
-            add(f'convert-{suffix}', 'convert-model', [f'train-{suffix}'], vocab, model)
-            add(f'eval-{suffix}', 'evaluate-model', [f'convert-{suffix}'], vocab, model)
+    sample_keys = [f'sample-{size_key(pool)}' for pool in pools]
+    for pool, sample_key in zip(pools, sample_keys):
+        add(sample_key, 'sample-pool', ['download'], pool=pool)
+        for vocab in vocabs:
+            suffix = f'{size_key(pool)}-{vocab}'
+            # Finish all requested raw pools before beginning tokenizer training.
+            add(f'bpe-{suffix}', 'train-tokenizer', sample_keys, vocab, pool=pool)
+            if pool not in training_pools:
+                continue
+            add(f'tokens-{suffix}', 'tokenize-data', [f'bpe-{suffix}'], vocab, pool=pool)
+            for model in models:
+                run = f'{model}-{suffix}'
+                add(f'train-{run}', 'train-model', sorted({f'tokens-{suffix}',
+                    f'tokens-{size_key(pool)}-32000'}), vocab, model, pool)
+                add(f'convert-{run}', 'convert-model', [f'train-{run}'], vocab, model, pool)
+                add(f'eval-{run}', 'evaluate-model', [f'convert-{run}'], vocab, model, pool)
     return nodes
 
 
+def migrate_pools(state, vocabs, models, pools, training_pools):
+    """Replace only the unsubmitted legacy plan, retaining the live parent job."""
+    if state.get('plan_version') == 2:
+        raise ValueError('Pool plan already migrated; do not reinitialize or duplicate jobs')
+    old = state['nodes']
+    for key, node in old.items():
+        if key != 'download' and (node['status'] != 'pending' or node.get('receipt') or node.get('name')):
+            raise ValueError(f'Cannot replace submitted legacy stage {key}; inspect its actual job first')
+    nodes = make_nodes(vocabs, models, pools, training_pools)
+    nodes['download'] = old['download']
+    state.setdefault('plan_history', []).append({'changed_at': now(), 'nodes': old,
+        'reason': 'Six independent raw pools, 18 tokenizers, and 27 one-epoch model runs'})
+    state.update(nodes=nodes, plan_version=2, pool_sizes=list(pools), training_pools=list(training_pools))
+    state.pop('submission_hold', None)
+
+
 def ready_nodes(state):
+    if state.get('submission_hold'):
+        return []
     return [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error')
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
@@ -146,11 +183,11 @@ def refresh(state, folder):
                     # The serialized protobuf omits the empty list for zero GPUs.
                     assigned_gpus = len(assignment.get('gpus', []))
                     node['assigned_gpus'] = assigned_gpus
-                    if node['stage'] == 'download-data' and assigned_gpus:
+                    if node['stage'] in RAW_STAGES and assigned_gpus:
                         # The user accepts scheduler-imposed GPU reservations for
                         # this CPU workload so it can use any Weka cluster.
                         node['resource_warning'] = (f'Requested 0 GPUs; Beaker reserved {assigned_gpus}. '
-                                                    'Download remains CPU-only.')
+                                                    'Raw-data job remains CPU-only.')
                     elif assigned_gpus != node['expected_gpus']:
                         raise RuntimeError(f"Expected {node['expected_gpus']} GPUs, assigned {assigned_gpus}")
                     else:
@@ -227,8 +264,8 @@ def render_report(state, destination):
     escape = lambda value: html.escape(str(value))
     nodes = state['nodes']
     evaluations = [n for n in nodes.values() if n['stage'] == 'evaluate-model']
-    complete = all(n['status'] == 'succeeded' and set(EVALS) <= set(n.get('summary', {}).get('metrics', {}))
-                   for n in evaluations)
+    complete = (bool(evaluations) and all(n['status'] == 'succeeded' for n in nodes.values())
+                and all(set(EVALS) <= set(n.get('summary', {}).get('metrics', {})) for n in evaluations))
     state['complete'] = complete
     status_counts = Counter(n['status'] for n in nodes.values())
     rows = []
@@ -251,8 +288,8 @@ def render_report(state, destination):
                     f'<td>{escape(detail)}</td><td>{escape(eta)}</td></tr>')
     results = []
     for node in evaluations:
-        suffix = f'{node["model_size"]}-{node["vocab_size"]}'
-        training = nodes[f'train-{suffix}'].get('summary', {})
+        conversion = nodes[node['dependencies'][0]]
+        training = nodes[conversion['dependencies'][0]].get('summary', {})
         cfg = training.get('config', {})
         metrics = node.get('summary', {}).get('metrics', {})
         scores = []
@@ -260,7 +297,7 @@ def render_report(state, destination):
             value = metrics.get(task, {}).get('bpb' if task == 'dolma_bpb' else 'accuracy')
             scores.append('—' if value is None else (f'{value:.4f}' if task == 'dolma_bpb' else f'{100 * value:.2f}%'))
         results.append('<tr>' + ''.join(f'<td>{escape(value)}</td>' for value in
-                       [node['model_size'], node['vocab_size'], cfg.get('seq_length', '—'),
+                       [node.get('data_size', '100GB'), node['model_size'], node['vocab_size'], cfg.get('seq_length', '—'),
                         cfg.get('training', {}).get('learning_rate', '—'), *scores, node['status']]) + '</tr>')
     payload = json.dumps(state, sort_keys=True).replace('<', '\\u003c')
     document = '''<!doctype html><html lang="en"><meta charset="utf-8">
@@ -274,14 +311,32 @@ button{padding:8px 14px;border:1px solid #08649e;border-radius:6px;background:wh
 details{margin-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}td:nth-child(4){max-width:550px}
 </style><body><h1>Tokenizer vocabulary study</h1>'''
     document += f'<p class="badge">{"Complete" if complete else "In progress"} · {escape(state.get("checked_at", now()))}</p>'
-    document += ('<p>One epoch on the same uniform 100GB Dolma sample; BPE vocabularies and model sizes are compared at matched bytes per context. '
+    pools = state.get('pool_sizes', ['100GB'])
+    training_pools = state.get('training_pools', ['100GB'])
+    document += (f'<p>Independent uniform Dolma pools: {escape(", ".join(pools))}. '
+                 f'One-epoch model training on {escape(", ".join(training_pools))}; '
+                 'BPE vocabularies and model sizes are compared at matched bytes per context within each pool. '
                  'Each training job uses 8 H100s, global batch 256, WSD with 96 warmup steps and a final 10% linear decay. '
                  'Contexts use round(4096 × target tokens/byte ÷ 32k tokens/byte). Per-GPU microbatches: small 32, medium 16, medium_large 8.</p>')
     document += '<h2>Evaluation results</h2><p>Downstream scores use the repository’s byte-normalized scoring (including BLiMP); these differ from standard benchmark scoring. '
     document += 'Higher accuracy is better. Lower held-out Dolma bits/byte is better. Dolma uses the same 1,000 held-out documents for all runs. Dashes are pending results.</p>'
     document += '<div class="scroll"><table><thead><tr>' + ''.join(f'<th>{x}</th>' for x in
-                ['Model', 'Vocabulary', 'Context', 'LR', 'BLiMP ↑', 'ARC-Easy ↑', 'HellaSwag ↑', 'PIQA ↑', 'Dolma BPB ↓', 'Eval status']) + '</tr></thead><tbody>'
+                ['Pool', 'Model', 'Vocabulary', 'Context', 'LR', 'BLiMP ↑', 'ARC-Easy ↑', 'HellaSwag ↑', 'PIQA ↑', 'Dolma BPB ↓', 'Eval status']) + '</tr></thead><tbody>'
     document += ''.join(results) + '</tbody></table></div>'
+    document += '<h2>Raw pools and tokenizers</h2><p>GB labels denote approximate UTF-8 text size from uniform record sampling; token counts are measured, not assumed. Samples are independent across sizes and contain no repetition. Shared evaluation records are excluded from every smaller pool.</p>'
+    document += '<div class="scroll"><table><thead><tr><th>Pool</th><th>Actual text GB</th><th>Records</th><th>Vocabulary</th><th>Tokenizer</th><th>Train tokens</th></tr></thead><tbody>'
+    for node in nodes.values():
+        if node['stage'] != 'train-tokenizer':
+            continue
+        pool, vocab = node.get('data_size', '100GB'), node['vocab_size']
+        info = nodes.get(f'sample-{size_key(pool)}', {}).get('summary', {}).get('pool', {})
+        meta = nodes.get(f'tokens-{size_key(pool)}-{vocab}', {}).get('summary', {}).get('meta', {})
+        cells = [pool, info.get('actual_text_gb', '—'), info.get('records', '—'), vocab,
+                 node['status'], meta.get('train', {}).get('tokens', '—')]
+        document += '<tr>' + ''.join(f'<td>{escape(x)}</td>' for x in cells) + '</tr>'
+    document += '</tbody></table></div>'
+    if state.get('submission_hold'):
+        document += '<p>Submissions held: ' + escape(state['submission_hold']) + '</p>'
     document += '<h2>Jobs and ETA</h2><p>' + escape(', '.join(f'{count} {status}' for status, count in sorted(status_counts.items()))) + '</p>'
     document += '<p>ETAs come from current log progress. Queue time, later stages, initialization, and evaluation are not included in training ETAs. '
     document += 'No campaign completion time is claimed before enough throughput is measured. GPU columns show requested / assigned.</p>'
@@ -302,6 +357,10 @@ def main():
     parser.add_argument('--campaign', default='tokstudy-20261012')
     parser.add_argument('--vocabs', nargs='+', type=int, default=[32000, 64000, 128000])
     parser.add_argument('--models', nargs='+', choices=MODEL_MICROBATCHES, default=list(MODEL_MICROBATCHES))
+    parser.add_argument('--pool-sizes', nargs='+', type=data_size, default=list(POOL_SIZES))
+    parser.add_argument('--training-pools', nargs='+', type=data_size, default=list(TRAINING_POOLS))
+    parser.add_argument('--migrate-pools', action='store_true',
+                        help='Replace unsubmitted legacy stages while preserving the existing 100GB job')
     parser.add_argument('--workspace', default='ai2/flex2')
     parser.add_argument('--owner', default='sewonm')
     parser.add_argument('--advance', action='store_true', help='Submit stages whose prerequisites have succeeded')
@@ -318,7 +377,9 @@ def main():
             if not re.fullmatch(r'[a-z0-9-]+', args.campaign):
                 parser.error('Campaign name must contain lowercase letters, digits, and hyphens')
             state = {'campaign': args.campaign, 'workspace': args.workspace, 'owner': args.owner,
-                     'created_at': now(), 'nodes': make_nodes(args.vocabs, args.models)}
+                     'created_at': now(), 'plan_version': 2, 'pool_sizes': args.pool_sizes,
+                     'training_pools': args.training_pools,
+                     'nodes': make_nodes(args.vocabs, args.models, args.pool_sizes, args.training_pools)}
             if args.download_receipt:
                 receipt = read_json(args.download_receipt)
                 state['nodes']['download'].update(receipt=receipt, name=receipt['name'], status='submitted')
@@ -327,6 +388,8 @@ def main():
             state = read_json(args.state)
         if not args.offline:
             refresh(state, args.state.parent)
+        if args.migrate_pools:
+            migrate_pools(state, args.vocabs, args.models, args.pool_sizes, args.training_pools)
         if args.retry_node:
             if not args.advance or args.offline:
                 parser.error('--retry-node requires --advance and live status checking')
