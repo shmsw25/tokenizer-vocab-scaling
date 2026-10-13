@@ -116,6 +116,15 @@ def log_progress(lines, stage):
             elif text.startswith('Sampling records:'):
                 eta += ' for sample writing'
             return {'text': text[-250:], 'eta': eta, 'observed_at': line['timestamp']}
+        if stage == 'sample-pool':
+            if text.startswith(('Pool ready:', 'Pool already complete:')):
+                return {'text': text, 'eta': 'Sample complete; finalizing job',
+                        'observed_at': line['timestamp']}
+            if re.match(r'Sampling [\d.]+GB: [\d,]+/[\d,]+ eligible records;', text):
+                # Beaker may buffer the following tqdm line until its newline.
+                # Do not fall back to the previous phase's 100%/zero ETA.
+                return {'text': text, 'eta': 'Unknown; waiting for sample-writing progress',
+                        'observed_at': line['timestamp']}
         if stage == 'download-data':
             if text.startswith(('Raw data ready:', 'Sample contains ')):
                 return {'text': text, 'eta': 'Sample complete; finalizing job',

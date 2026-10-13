@@ -295,3 +295,17 @@ def test_sampling_progress_supersedes_completed_download():
                   '\rSampling records: 20%|##| 2.93M/14.6M [01:30<06:00, 32.5k records/s]'
                   '\rSampling records: 20%|'})
     assert campaign.log_progress(lines, 'download-data')['eta'] == '06:00 for sample writing'
+
+
+def test_pool_sampling_phase_does_not_reuse_counting_eta():
+    lines = [{'timestamp': '2026-10-13T01:37:48Z',
+              'message': 'Counting records: 100%|###| 131G/131G [03:53<00:00, 560MB/s]'},
+             {'timestamp': '2026-10-13T01:37:49Z',
+              'message': 'Sampling 5GB: 731,269/14,625,399 eligible records; independent seed 42'}]
+    assert campaign.log_progress(lines, 'sample-pool')['eta'].startswith('Unknown;')
+    lines.append({'timestamp': '2026-10-13T01:38:00Z',
+                  'message': 'Sampling 5GB: 50%|###| 65.5G/131G [01:30<01:30, 727MB/s]'})
+    assert campaign.log_progress(lines, 'sample-pool')['eta'] == '01:30'
+    lines.append({'timestamp': '2026-10-13T01:40:00Z',
+                  'message': 'Pool ready: 5GB; 731,269 records; 5.0 GB text'})
+    assert campaign.log_progress(lines, 'sample-pool')['eta'] == 'Sample complete; finalizing job'
