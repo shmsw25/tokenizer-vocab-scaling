@@ -11,6 +11,7 @@ case "$mode" in
         python -m pip install -e './EMO[wandb]'
         if [[ "$mode" == all ]]; then
             python -m pip install -r requirements-launch.txt
+            python -m pip install -r requirements-report.txt
         fi
         ;;
     *) echo "Usage: $0 [cpu|train|all]" >&2; exit 2 ;;

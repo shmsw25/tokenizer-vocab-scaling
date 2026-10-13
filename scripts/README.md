@@ -305,10 +305,21 @@ existing Weka work where supported. It allows at most three attempts per node.
 Each poll saves job status, observed GPU assignments, log tails, configurations,
 result manifests, and current ETAs. Download ETA uses recent observed text-byte
 throughput and excludes the subsequent sampling pass; model ETA comes from EMO.
-Queue wait and unmeasured stages are reported as unknown. The HTML report at
-`.build/report.html` is marked complete only after all stages succeed and all
-27 evaluations have all five metrics. Results include pool size and a separate
-18-tokenizer status table. It embeds downloadable JSON provenance.
+Queue wait and unmeasured stages are reported as unknown. Install the local report
+dependency with `python -m pip install -r requirements-report.txt` (included in
+`setup_env.sh all`). The self-contained `.build/report.html` shows per-pool
+tokenizer counts, three FLOPs plots with a metric selector, and a run grid grouped
+by pool, K-formatted vocabulary, and model. Each LR/WD run shows its training state
+and held-out Dolma BPB, BLiMP, ARC-E, HellaSwag, and PIQA together.
+FLOPs are calculated only after target and same-pool 32K tokenization finish:
+complete global batches consumed in one epoch times the pinned EMO model's
+forward/backward FLOPs per token at the scaled context. Plot points require
+completed training and the selected metric. Multiple tuning runs select the
+lowest final validation BPB, consistently across all plotted metrics.
+Training emits loss observations without changing the optimization recipe.
+Full hyperparameters, token counts, FLOPs, losses, job links, and provenance
+remain in downloadable JSON. Completion requires all stages and all five
+metrics for every evaluation.
 The controller is a single polling command, not its own background scheduler;
 the requested hourly chat heartbeat invokes it and reports progress.
 

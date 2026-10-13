@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tokenizer vocabulary study</title>
+<style>
+:root{--ink:#17243a;--muted:#66768b;--line:#e0e6ef;--blue:#2563eb}*{box-sizing:border-box}
+body{margin:0;background:#f5f7fa;color:var(--ink);font:14px/1.5 Inter,system-ui,sans-serif}
+main{max-width:1520px;margin:30px auto 64px;padding:0 24px}h1{font-size:30px;letter-spacing:-.7px;margin:0 0 20px}h2{font-size:19px;margin:0}h3{font-size:18px;margin:0 0 6px}
+section{background:white;border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:22px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+p{margin:8px 0}.note,.muted{color:var(--muted);font-size:12px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th{font-size:11px;color:var(--muted);font-weight:650;background:#f8fafc}
+th:first-child,td:first-child{text-align:left}tbody tr:last-child td{border-bottom:0}tfoot td{border-top:2px solid var(--line);border-bottom:0;font-weight:700}
+.summary{max-width:850px}.summary td,.summary th{padding:6px 12px}.summary td:first-child{font-weight:650}.count-heading{font-size:13px;font-weight:400;color:var(--muted);margin-left:10px}
+.charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.chart{min-width:0;border:1px solid var(--line);border-radius:9px;padding:12px 6px 0}.chart h3{padding-left:12px}.plot{height:330px}
+.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:12px;margin:8px 0 15px}.legend span{display:flex;align-items:center;gap:6px}.swatch{width:22px;height:3px;display:inline-block}.model-key{color:var(--muted)}
+select,button{font:inherit;font-size:12px;color:var(--ink);background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:7px 10px}button{cursor:pointer}select:focus,button:focus,summary:focus{outline:2px solid #93c5fd;outline-offset:2px}
+label{font-size:12px;color:var(--muted)}.filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}
+.status{border-radius:5px;display:inline-block;font-size:10px;line-height:1.5;padding:2px 6px;white-space:nowrap;font-weight:650}.planned{background:#eef1f5;color:#64748b}.queued{background:#fff5da;color:#946200}.running{background:#e8f0ff;color:#205ac0}.completed{background:#e7f5ed;color:#187344}.failed,.canceled{background:#ffe9e8;color:#a92822}
+.grid td{vertical-align:top;text-align:left}.grid th{text-align:left}.grid td:nth-child(4){white-space:normal;min-width:440px;width:55%}.coordinates{display:flex;flex-wrap:wrap;gap:7px}
+.coordinate{border:1px solid var(--line);border-radius:7px;background:#fbfcfe;min-width:410px;max-width:100%;padding:8px 10px}.coordinate.chosen{border-color:#a7d6bb;background:#f5fcf7}
+.coord-top{display:flex;align-items:center;justify-content:space-between;gap:12px}.settings{font-weight:600;font-size:12px}.scores{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:8px;font-size:12px;font-variant-numeric:tabular-nums}.score-label{display:block;color:var(--muted);font-size:10px;margin-bottom:2px}
+.best{color:#187344;font-weight:650}.empty{color:var(--muted)}.footnote{margin-top:12px}.details-body{padding-top:12px}details>summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}.support{padding:14px 20px}.nowrap{white-space:nowrap}
+@media(max-width:1000px){.charts{grid-template-columns:1fr}.chart{max-width:100%}main{padding:0 14px}.section-head{align-items:flex-start}.grid td:nth-child(4){min-width:300px}section{padding:16px}.count-heading{display:block;margin:3px 0 0}}
+</style>
+</head><body><main>
+<h1>Tokenizer vocabulary study</h1>
+<section id="tokenizer-summary">
+<div class="section-head"><h2>Tokenizers <span class="count-heading" id="tokenizer-total"></span></h2></div>
+<div class="table-wrap summary"><table><thead><tr><th>Pool</th><th>Total</th><th>Finished</th><th>In progress</th><th>Queued</th><th>Planned</th><th>Failed / canceled</th></tr></thead><tbody id="tokenizer-counts"></tbody><tfoot id="tokenizer-totals"></tfoot></table></div>
+</section>
+<section>
+<div class="section-head"><h2>Training compute and evaluation</h2><label>Metric <select id="metric" aria-label="Plot metric"></select></label></div>
+<div class="legend"><span><i class="swatch" style="background:#2563eb"></i>32K</span><span><i class="swatch" style="background:#8b5cf6"></i>64K</span><span><i class="swatch" style="background:#dc681e"></i>128K</span><span class="model-key">● small &nbsp; ■ medium &nbsp; ◆ medium_large</span></div>
+<div class="charts" id="charts"></div>
+<p class="note footnote">Each vocabulary line connects model sizes. FLOPs use measured training tokens, the scaled context, and EMO’s idealized forward + backward FLOPs/token. Incomplete final batches are excluded. Points appear only for completed training runs with the selected metric.</p>
+<p class="note">When a coordinate has multiple runs, its completed run with the lowest validation BPB is used consistently across metrics. A single run needs no selection; missing values remain blank.</p>
+</section>
+<section class="support"><details><summary>Data, FLOPs method, and provenance</summary><div class="details-body">
+<p class="note">Pool labels approximate UTF-8 text size. The table below uses exact measured record and byte counts.</p>
+<div class="table-wrap"><table><thead><tr><th>Pool</th><th>Actual text GB</th><th>Records</th></tr></thead><tbody id="pool-details"></tbody></table></div>
+<p class="note">One-epoch tokens = floor(train tokens / (context × global batch)) × context × global batch. Context = round(4096 × target tokens/byte ÷ the same pool’s 32K tokens/byte). Both tokenization streams must finish before FLOPs are calculated. Model FLOPs/token comes directly from the pinned EMO model, including attention and the vocabulary-dependent output projection; it excludes recomputation and hardware overhead.</p>
+<p class="note">Training and validation BPB are token-averaged CE × that split’s measured tokens/byte ÷ ln(2). These are split-normalized loss estimates, separate from the shared held-out Dolma BPB evaluation. Their observation steps and all run hyperparameters are retained in the downloadable report data.</p>
+<button id="download">Download report data</button><details><summary>Job status and ETA</summary><div class="table-wrap"><table><thead><tr><th>Job</th><th>State</th><th>GPUs requested / assigned</th><th>Progress</th><th>ETA</th></tr></thead><tbody id="job-rows"></tbody></table></div></details>
+</div></details></section>
+<section id="run-grid">
+<div class="section-head"><h2>Run coordinate grid</h2><span class="note" id="run-total"></span></div>
+<p class="note">One row per pool, vocabulary, and model. Each run shows its LR, WD, training state, and five evaluation metrics. Green borders mark the validation-selected completed run.</p>
+<p class="note">Held-out Dolma BPB uses the same 1,000 documents for every model. BLiMP, ARC-E, HS (HellaSwag), and PIQA are accuracies under the repository’s byte-normalized scoring.</p>
+<div class="filters"><label>Pool <select id="pool-filter"><option value="">All</option></select></label><label>Vocabulary <select id="vocab-filter"><option value="">All</option></select></label><label>Model <select id="model-filter"><option value="">All</option></select></label><label>Training state <select id="status-filter"><option value="">All</option><option>planned</option><option>queued</option><option>running</option><option>completed</option><option>failed</option><option>canceled</option></select></label><span class="note" id="filter-count"></span></div>
+<div class="table-wrap"><table class="grid"><thead><tr><th>Pool</th><th>Vocabulary</th><th>Model</th><th>Runs · Dolma BPB ↓ / BLiMP ↑ / ARC-E ↑ / HS ↑ / PIQA ↑</th></tr></thead><tbody id="coordinate-rows"></tbody></table></div>
+</section>
+</main>
+<script>__PLOTLY_JS__</script>
+<script id="report-data" type="application/json">__REPORT_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('report-data').textContent);
+const $=id=>document.getElementById(id);
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num=(x,d=4)=>x==null?'—':Number(x).toFixed(d);
+const integer=x=>x==null?'—':Number(x).toLocaleString('en-US');
+const sci=x=>x==null?'—':Number(x).toExponential(3);
+const badge=s=>`<span class="status ${esc(s)}">${esc(s)}</span>`;
+const link=(url,label)=>url?`<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`:esc(label);
+const selected=new Set(data.selected);
+const totals={total:0,completed:0,running:0,queued:0,planned:0,failed:0,canceled:0};
+function countCells(row){return [row.total,row.completed,row.running,row.queued,row.planned,`${row.failed} / ${row.canceled}`].map(x=>`<td>${x}</td>`).join('');}
+$('tokenizer-counts').innerHTML=data.tokenizers.map(row=>{Object.keys(totals).forEach(k=>totals[k]+=row[k]);return `<tr><td>${esc(row.pool)}</td>${countCells(row)}</tr>`;}).join('');
+$('tokenizer-totals').innerHTML=`<tr><td>All pools</td>${countCells(totals)}</tr>`;
+$('tokenizer-total').textContent=`${totals.total} total across ${data.tokenizers.length} pools`;
+$('metric').innerHTML=Object.entries(data.metric_labels).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('');
+$('metric').value='dolma_bpb';
+$('charts').innerHTML=data.pools.map((p,i)=>`<article class="chart"><h3>${esc(p)}</h3><div class="plot" id="plot-${i}" aria-label="${esc(p)} training FLOPs plot"></div></article>`).join('');
+function plot(){data.figures[$('metric').value].forEach((fig,i)=>Plotly.react(`plot-${i}`,fig.data,fig.layout,{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d'],toImageButtonOptions:{format:'svg',filename:`tokenizer-${data.pools[i]}-${$('metric').value}`}}));}
+$('metric').addEventListener('change',plot);plot();
+$('pool-details').innerHTML=data.pool_details.filter(p=>p.data_size).sort((a,b)=>parseFloat(a.data_size)-parseFloat(b.data_size)).map(p=>`<tr><td>${esc(p.data_size)}</td><td>${num(p.actual_text_gb,6)}</td><td>${integer(p.records)}</td></tr>`).join('');
+const statusMap={pending:'planned',submitted:'queued',initializing:'running',succeeded:'completed'};
+$('job-rows').innerHTML=Object.entries(data.campaign.nodes).map(([key,n])=>`<tr><td>${link(n.receipt?.url,key)}</td><td>${badge(statusMap[n.status]||n.status)}</td><td>${n.expected_gpus} / ${n.assigned_gpus??'—'}</td><td>${esc(n.monitor_error||n.submission_error||n.progress?.text||'')}${n.resource_warning?' '+esc(n.resource_warning):''}</td><td>${esc(n.status==='succeeded'?'Complete':n.progress?.eta||'Awaiting prerequisites')}</td></tr>`).join('');
+$('download').addEventListener('click',()=>{const {figures,...payload}=data;const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='tokenizer-study-results.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+for(const [id,values] of [['pool-filter',data.pools],['vocab-filter',[...new Set(data.runs.map(r=>r.vocab_label))]],['model-filter',[...new Set(data.runs.map(r=>r.model))]]]){$(id).insertAdjacentHTML('beforeend',values.map(v=>`<option>${esc(v)}</option>`).join(''));}
+function coordinate(r){const m=r.metrics;const marked=selected.has(r.id)&&r.status==='completed'&&m.validation_bpb!=null;
+ const values=[['dolma_bpb','Dolma BPB'],['blimp','BLiMP'],['arc_easy','ARC-E'],['hellaswag','HS'],['piqa','PIQA']];
+ return `<div class="coordinate ${marked?'chosen':''}"><div class="coord-top"><span class="settings">${link(r.url,`LR ${r.lr} · WD ${r.wd}`)}</span>${badge(r.status)}</div><div class="scores">${values.map(([key,label])=>`<span><span class="score-label">${label}</span><b>${m[key]==null?'—':key==='dolma_bpb'?num(m[key]):num(m[key]*100,2)+'%'}</b></span>`).join('')}</div></div>`;
+}
+function grid(){const runs=data.runs.filter(r=>(!$('pool-filter').value||r.pool===$('pool-filter').value)&&(!$('vocab-filter').value||r.vocab_label===$('vocab-filter').value)&&(!$('model-filter').value||r.model===$('model-filter').value)&&(!$('status-filter').value||r.status===$('status-filter').value));const groups=new Map();runs.forEach(r=>{const key=[r.pool,r.vocab,r.model].join('|');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);});
+ $('coordinate-rows').innerHTML=[...groups.values()].map(rs=>{const r=rs[0];return `<tr><td>${esc(r.pool)}</td><td>${r.vocab_label}</td><td>${esc(r.model)}</td><td><div class="coordinates">${rs.map(coordinate).join('')}</div></td></tr>`;}).join('')||'<tr><td colspan="4" class="empty">No runs match these filters.</td></tr>';
+ $('filter-count').textContent=`${groups.size} rows · ${runs.length} runs`;
+}
+$('run-total').textContent=`${data.runs.length} runs`;
+['pool-filter','vocab-filter','model-filter','status-filter'].forEach(id=>$(id).addEventListener('change',grid));grid();
+</script></body></html>

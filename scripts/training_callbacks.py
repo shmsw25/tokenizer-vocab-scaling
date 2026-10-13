@@ -1,9 +1,48 @@
 """Checkpoint policy for retaining the full-LR branch point of a WSD run."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
+import math
 from pathlib import Path
 
 from olmo_core.distributed.utils import get_rank
-from olmo_core.train.callbacks import CheckpointerCallback
+from olmo_core.train.callbacks import Callback, CheckpointerCallback
+
+
+@dataclass
+class ReportMetricsCallback(Callback):
+    """Publish loss observations for the report without changing training."""
+    output_dir: str
+    train_tokens_per_byte: float
+    eval_tokens_per_byte: float
+    latest: dict = field(default_factory=dict)
+
+    def pre_train(self):
+        path = Path(self.output_dir) / 'report_metrics.json'
+        if path.is_file():
+            self.latest = json.loads(path.read_text())
+
+    def log_metrics(self, step, metrics):
+        if get_rank() != 0:
+            return
+        changed = False
+        for name, value in metrics.items():
+            if name == 'train/CE loss':
+                label, ratio = 'train', self.train_tokens_per_byte
+            elif name.startswith('eval/') and name.endswith('/validation/CE loss'):
+                label, ratio = 'validation', self.eval_tokens_per_byte
+            else:
+                continue
+            if not math.isfinite(float(value)) or step < self.latest.get(f'{label}_step', 0):
+                continue
+            self.latest.update({f'{label}_ce': float(value),
+                                f'{label}_bpb': float(value) * ratio / math.log(2),
+                                f'{label}_step': step})
+            changed = True
+        if changed:
+            from scripts.pipeline import write_json
+            self.latest['step'] = max(step, self.latest.get('step', 0))
+            write_json(Path(self.output_dir) / 'report_metrics.json', self.latest)
+            print('REPORT_METRICS ' + json.dumps(self.latest, sort_keys=True), flush=True)
 
 
 def pre_decay_step(total_steps, warmup_steps, decay_fraction):

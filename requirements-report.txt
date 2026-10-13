@@ -1,0 +1,2 @@
+# Local standalone HTML report; CPU Beaker jobs do not need this package.
+plotly==6.9.0

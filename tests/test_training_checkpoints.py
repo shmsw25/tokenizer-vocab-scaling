@@ -8,7 +8,7 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.training_callbacks import WSDCheckpointerCallback, pre_decay_step
+from scripts.training_callbacks import ReportMetricsCallback, WSDCheckpointerCallback, pre_decay_step
 
 
 @pytest.mark.parametrize('total', [1000, 1005, 1015, 10001])
@@ -54,7 +54,8 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
         trainer = TrainerConfig(
             save_folder=str(output), work_dir=str(tmp_path / 'work'), device='cpu',
             max_duration=Duration.steps(10), metrics_collect_interval=1,
-            callbacks={'checkpointer': callback, 'config_saver': ConfigSaverCallback()},
+            callbacks={'checkpointer': callback, 'config_saver': ConfigSaverCallback(),
+                       'report_metrics': ReportMetricsCallback(str(output), 0.25, 0.24)},
         ).build(module, loader)
         trainer.callbacks['config_saver'].config = {'test': True}
         def unexpected_async_save(**kwargs):
@@ -64,6 +65,9 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
 
     trainer, callback = build()
     trainer.fit()
+    metrics = json.loads((output / 'report_metrics.json').read_text())
+    assert metrics['train_step'] == 10
+    assert metrics['train_bpb'] == pytest.approx(metrics['train_ce'] * 0.25 / np.log(2))
     record_path = output / 'pre_decay_checkpoint.json'
     record = json.loads(record_path.read_text())
     assert record['status'] == 'saved' and record['step'] == 7

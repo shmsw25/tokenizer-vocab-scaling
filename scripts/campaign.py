@@ -8,7 +8,6 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import fcntl
-import html
 import json
 from pathlib import Path
 import re
@@ -217,6 +216,16 @@ def refresh(state, folder):
                           'message': line.message.decode(errors='replace')}
                          for line in b.job.logs(job, tail_lines=160, follow=False)]
                 write_json(folder / 'logs' / f'{key}.json', lines)
+                if node['stage'] == 'train-model':
+                    for line in lines:
+                        for fragment in line['message'].splitlines():
+                            if 'REPORT_METRICS ' in fragment:
+                                try:
+                                    metrics = json.loads(fragment.split('REPORT_METRICS ', 1)[1])
+                                    if isinstance(metrics, dict) and metrics.get('step', 0) >= node.get('reported_metrics', {}).get('step', 0):
+                                        node['reported_metrics'] = metrics
+                                except (ValueError, TypeError):
+                                    pass  # A truncated log line is not a metric observation.
                 node['progress'] = log_progress(lines, node['stage'])
                 if node['status'] == 'queued':
                     node['progress'] = {'text': node['job_status'].get('failedSchedulingMessage', 'Queued'),
@@ -283,92 +292,8 @@ def retry_node(state, key):
 
 
 def render_report(state, destination):
-    escape = lambda value: html.escape(str(value))
-    nodes = state['nodes']
-    evaluations = [n for n in nodes.values() if n['stage'] == 'evaluate-model']
-    complete = (bool(evaluations) and all(n['status'] == 'succeeded' for n in nodes.values())
-                and all(set(EVALS) <= set(n.get('summary', {}).get('metrics', {})) for n in evaluations))
-    state['complete'] = complete
-    status_counts = Counter(n['status'] for n in nodes.values())
-    rows = []
-    for key, node in nodes.items():
-        receipt = node.get('receipt', {})
-        label = escape(key)
-        if receipt.get('url'):
-            label = f'<a href="{escape(receipt["url"])}">{label}</a>'
-        progress = node.get('progress', {})
-        error = node.get('monitor_error') or node.get('submission_error') or ''
-        if node['status'] == 'pending':
-            detail = 'After ' + ', '.join(node['dependencies'])
-        else:
-            detail = error or progress.get('text', '')
-        if node.get('resource_warning'):
-            detail += ' ' + node['resource_warning']
-        eta = 'Complete' if node['status'] == 'succeeded' else progress.get('eta', 'Awaiting prerequisites')
-        rows.append(f'<tr><td>{label}</td><td>{escape(node["status"])}</td>'
-                    f'<td>{node["expected_gpus"]} / {escape(node.get("assigned_gpus", "—"))}</td>'
-                    f'<td>{escape(detail)}</td><td>{escape(eta)}</td></tr>')
-    results = []
-    for node in evaluations:
-        conversion = nodes[node['dependencies'][0]]
-        training = nodes[conversion['dependencies'][0]].get('summary', {})
-        cfg = training.get('config', {})
-        metrics = node.get('summary', {}).get('metrics', {})
-        scores = []
-        for task in EVALS:
-            value = metrics.get(task, {}).get('bpb' if task == 'dolma_bpb' else 'accuracy')
-            scores.append('—' if value is None else (f'{value:.4f}' if task == 'dolma_bpb' else f'{100 * value:.2f}%'))
-        results.append('<tr>' + ''.join(f'<td>{escape(value)}</td>' for value in
-                       [node.get('data_size', '100GB'), node['model_size'], node['vocab_size'], cfg.get('seq_length', '—'),
-                        cfg.get('training', {}).get('learning_rate', '—'), *scores, node['status']]) + '</tr>')
-    payload = json.dumps(state, sort_keys=True).replace('<', '\\u003c')
-    document = '''<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tokenizer vocabulary study</title><style>
-body{font:15px/1.55 system-ui,sans-serif;margin:40px auto;padding:0 24px;max-width:1500px;color:#142c3d;background:#f7f9fb}
-h1{font-size:34px;line-height:1.2}h2{margin-top:36px}a{color:#08649e}table{border-collapse:collapse;width:100%;background:white}
-th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #dce5eb;vertical-align:top}th{background:#eaf1f6}
-.scroll{overflow-x:auto}p{max-width:1100px}.badge{padding:6px 12px;border-radius:20px;background:#dbeef7;display:inline-block}
-button{padding:8px 14px;border:1px solid #08649e;border-radius:6px;background:white;color:#08649e;cursor:pointer}
-details{margin-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}td:nth-child(4){max-width:550px}
-</style><body><h1>Tokenizer vocabulary study</h1>'''
-    document += f'<p class="badge">{"Complete" if complete else "In progress"} · {escape(state.get("checked_at", now()))}</p>'
-    pools = state.get('pool_sizes', ['100GB'])
-    training_pools = state.get('training_pools', ['100GB'])
-    document += (f'<p>Independent uniform Dolma pools: {escape(", ".join(pools))}. '
-                 f'One-epoch model training on {escape(", ".join(training_pools))}; '
-                 'BPE vocabularies and model sizes are compared at matched bytes per context within each pool. '
-                 'Each training job uses 8 H100s, global batch 256, WSD with 96 warmup steps and a final 10% linear decay. '
-                 'Contexts use round(4096 × target tokens/byte ÷ 32k tokens/byte). Per-GPU microbatches: small 32, medium 16, medium_large 8.</p>')
-    document += '<h2>Evaluation results</h2><p>Downstream scores use the repository’s byte-normalized scoring (including BLiMP); these differ from standard benchmark scoring. '
-    document += 'Higher accuracy is better. Lower held-out Dolma bits/byte is better. Dolma uses the same 1,000 held-out documents for all runs. Dashes are pending results.</p>'
-    document += '<div class="scroll"><table><thead><tr>' + ''.join(f'<th>{x}</th>' for x in
-                ['Pool', 'Model', 'Vocabulary', 'Context', 'LR', 'BLiMP ↑', 'ARC-Easy ↑', 'HellaSwag ↑', 'PIQA ↑', 'Dolma BPB ↓', 'Eval status']) + '</tr></thead><tbody>'
-    document += ''.join(results) + '</tbody></table></div>'
-    document += '<h2>Raw pools and tokenizers</h2><p>GB labels denote approximate UTF-8 text size from uniform record sampling; token counts are measured, not assumed. Samples are independent across sizes and contain no repetition. Shared evaluation records are excluded from every smaller pool.</p>'
-    document += '<div class="scroll"><table><thead><tr><th>Pool</th><th>Actual text GB</th><th>Records</th><th>Vocabulary</th><th>Tokenizer</th><th>Train tokens</th></tr></thead><tbody>'
-    for node in nodes.values():
-        if node['stage'] != 'train-tokenizer':
-            continue
-        pool, vocab = node.get('data_size', '100GB'), node['vocab_size']
-        info = nodes.get(f'sample-{size_key(pool)}', {}).get('summary', {}).get('pool', {})
-        meta = nodes.get(f'tokens-{size_key(pool)}-{vocab}', {}).get('summary', {}).get('meta', {})
-        cells = [pool, info.get('actual_text_gb', '—'), info.get('records', '—'), vocab,
-                 node['status'], meta.get('train', {}).get('tokens', '—')]
-        document += '<tr>' + ''.join(f'<td>{escape(x)}</td>' for x in cells) + '</tr>'
-    document += '</tbody></table></div>'
-    if state.get('submission_hold'):
-        document += '<p>Submissions held: ' + escape(state['submission_hold']) + '</p>'
-    document += '<h2>Jobs and ETA</h2><p>' + escape(', '.join(f'{count} {status}' for status, count in sorted(status_counts.items()))) + '</p>'
-    document += '<p>ETAs come from current log progress. Queue time, later stages, initialization, and evaluation are not included in training ETAs. '
-    document += 'No campaign completion time is claimed before enough throughput is measured. GPU columns show requested / assigned.</p>'
-    document += '<div class="scroll"><table><thead><tr><th>Job</th><th>Status</th><th>GPUs</th><th>Progress</th><th>ETA</th></tr></thead><tbody>'
-    document += ''.join(rows) + '</tbody></table></div>'
-    document += '<h2>Reproducibility</h2><p>Job links retain immutable submitted source snapshots. The exported JSON contains run configurations, checkpoint paths, raw-data and tokenizer provenance, measured context ratios, evaluation counts and margins, and observed resource assignments.</p>'
-    document += '<button onclick="download()">Download results JSON</button><details><summary>Run metadata</summary><pre id="metadata"></pre></details>'
-    document += f'<script id="data" type="application/json">{payload}</script><script>const state=JSON.parse(document.getElementById("data").textContent);document.getElementById("metadata").textContent=JSON.stringify(state,null,2);function download(){{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{{type:"application/json"}}));a.download="tokenizer-study-results.json";a.click();URL.revokeObjectURL(a.href);}}</script></body></html>'
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(document)
+    from report import render_report as render
+    render(state, destination)
 
 
 def main():

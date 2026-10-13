@@ -34,7 +34,7 @@ from olmo_core.optim import AdamWConfig, WSD
 from olmo_core.train import Duration, TrainerConfig, prepare_training_environment, teardown_training_environment
 from olmo_core.train.callbacks import ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
 from olmo_core.train.train_module import TransformerDataParallelConfig, TransformerTrainModuleConfig
-from scripts.training_callbacks import WSDCheckpointerCallback
+from scripts.training_callbacks import ReportMetricsCallback, WSDCheckpointerCallback
 
 
 def load_meta(data_dir):
@@ -136,6 +136,10 @@ def main():
                     save_interval=t.get('save_steps', 10000), save_async=True,
                     warmup_steps=t['warmup_steps'], decay_fraction=t['decay_fraction']),
                 'config_saver': ConfigSaverCallback(),
+                'report_metrics': ReportMetricsCallback(
+                    output_dir=str(output_dir),
+                    train_tokens_per_byte=meta['train']['tokens'] / meta['train']['bytes'],
+                    eval_tokens_per_byte=meta['eval']['tokens'] / meta['eval']['bytes']),
                 'wandb': WandBCallback(enabled=t.get('report_to') == 'wandb',
                                       project=t.get('wandb_project', 'tokenizer-scaling'),
                                       name=cli.run_name or output_dir.name),
@@ -158,6 +162,8 @@ def main():
                 'steps': trainer.global_step, 'max_steps': trainer.max_steps,
                 'fit_seconds_this_attempt': time.monotonic() - started,
                 'parameters': sum(p.numel() for p in model.parameters()),
+                'flops_per_token': model.num_flops_per_token(seq_length),
+                'latest_metrics': trainer.callbacks['report_metrics'].latest,
                 'sequence_length': seq_length, 'global_batch_size': global_batch_size,
                 'pre_decay_checkpoint': json.loads((output_dir / 'pre_decay_checkpoint.json').read_text()),
             })
