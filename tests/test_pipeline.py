@@ -349,6 +349,19 @@ def test_sampling_progress_supersedes_completed_download():
     assert campaign.log_progress(lines, 'download-data')['eta'] == '06:00 for sample writing'
 
 
+def test_tokenization_eta_uses_pool_count_and_observed_rate():
+    lines = [{'timestamp': '2026-10-13T16:00:00Z', 'message': '256,000 documents'},
+             {'timestamp': '2026-10-13T16:04:00Z', 'message': '512,000 documents'}]
+    progress = campaign.log_progress(lines, 'tokenize-data', 1_024_000)
+    assert progress['documents'] == 512_000
+    assert progress['text'] == '512,000/1,024,000 documents (50.0%)'
+    assert progress['eta'].startswith('~8 min')
+    assert 'Need pool size' in campaign.log_progress(lines, 'tokenize-data')['eta']
+    assert 'Need pool size' in campaign.log_progress(lines[:1], 'tokenize-data', 1_024_000)['eta']
+    lines.append({'timestamp': '2026-10-13T16:08:00Z', 'message': '256,000 documents'})
+    assert 'Need pool size' in campaign.log_progress(lines, 'tokenize-data', 1_024_000)['eta']
+
+
 def test_pool_sampling_phase_does_not_reuse_counting_eta():
     lines = [{'timestamp': '2026-10-13T01:37:48Z',
               'message': 'Counting records: 100%|###| 131G/131G [03:53<00:00, 560MB/s]'},

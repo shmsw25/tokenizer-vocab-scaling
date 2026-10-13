@@ -96,7 +96,7 @@ def ready_nodes(state):
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
 
 
-def log_progress(lines, stage):
+def log_progress(lines, stage, total_records=None):
     # Beaker can pack thousands of carriage-return tqdm updates into one log
     # message. Select the latest complete update, including after a phase change.
     lines = [{'timestamp': line['timestamp'], 'message': ANSI.sub('', fragment).strip()}
@@ -147,6 +147,26 @@ def log_progress(lines, stage):
                 hours = max(0, 250 - last[1]) / (last[1] - first[1]) * (last[0] - first[0]) / 3600
                 eta = f'~{hours:.1f} h for download at recent rate; sampling follows'
             return {'text': f'{last[1]:.3f}/250 GB text downloaded', 'eta': eta,
+                    'observed_at': datetime.fromtimestamp(last[0], timezone.utc).isoformat()}
+    if stage == 'tokenize-data':
+        points = []
+        for line in lines:
+            if match := re.fullmatch(r'([\d,]+) documents', line['message']):
+                point = (datetime.fromisoformat(line['timestamp'].replace('Z', '+00:00')).timestamp(),
+                         int(match[1].replace(',', '')))
+                if points and point[1] <= points[-1][1]:
+                    points = []  # A restarted attempt must establish its own rate.
+                points.append(point)
+        if points:
+            first, last = points[max(0, len(points) - 4)], points[-1]
+            text = f'{last[1]:,} documents tokenized'
+            eta = 'Need pool size and more progress samples'
+            if total_records:
+                text = f'{last[1]:,}/{total_records:,} documents ({100 * last[1] / total_records:.1f}%)'
+                if last[0] - first[0] > 10 and last[1] > first[1]:
+                    minutes = max(0, total_records - last[1]) * (last[0] - first[0]) / (last[1] - first[1]) / 60
+                    eta = f'~{minutes:.0f} min at recent rate as of last update; finalization extra'
+            return {'text': text, 'eta': eta, 'documents': last[1], 'total_documents': total_records,
                     'observed_at': datetime.fromtimestamp(last[0], timezone.utc).isoformat()}
     return {'text': 'Waiting for measurable progress', 'eta': 'Not yet available'}
 
@@ -226,7 +246,9 @@ def refresh(state, folder):
                                         node['reported_metrics'] = metrics
                                 except (ValueError, TypeError):
                                     pass  # A truncated log line is not a metric observation.
-                node['progress'] = log_progress(lines, node['stage'])
+                pool = state['nodes'].get(f"sample-{size_key(node.get('data_size') or '100GB')}", {})
+                total_records = pool.get('summary', {}).get('pool', {}).get('records')
+                node['progress'] = log_progress(lines, node['stage'], total_records)
                 if node['status'] == 'queued':
                     node['progress'] = {'text': node['job_status'].get('failedSchedulingMessage', 'Queued'),
                                         'eta': 'Unknown queue wait'}
