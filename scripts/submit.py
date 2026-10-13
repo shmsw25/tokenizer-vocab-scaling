@@ -108,6 +108,10 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
     env_vars = [{'name': k, 'value': v} for k, v in env.items()]
     if args.hf_token_secret:
         env_vars.append({'name': 'HF_TOKEN', 'secret': args.hf_token_secret})
+    context = {'priority': args.priority, 'preemptible': args.preemptible}
+    if args.stage == 'train-model':
+        # Use the current scheduling field, not the deprecated preemptible flag.
+        context = {'priority': args.priority, 'minRuntime': '0s'}
     return {
         'version': 'v2',
         'description': f'Tokenizer project: {args.stage}; source {revision}',
@@ -128,13 +132,31 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
             # Offline previews use a named placeholder; real submissions resolve
             # every accessible Weka cluster rather than pinning a single cluster.
             'constraints': {'cluster': resolved_clusters or [args.cluster or WEKA_CLUSTERS_PLACEHOLDER]},
-            'context': {'priority': args.priority, 'preemptible': args.preemptible},
+            'context': context,
         }],
     }
 
 
 def git(*args):
     return subprocess.check_output(['git', '-C', str(REPO), *args], text=True).strip()
+
+
+def parse_spec(spec):
+    """Preserve explicit minRuntime with the installed beaker-py 2.5 client."""
+    from dataclasses import dataclass
+    from beaker import BeakerExperimentSpec, BeakerTaskContext
+
+    @dataclass
+    class RuntimeContext(BeakerTaskContext):
+        min_runtime: str | None = None
+
+    compatible = copy.deepcopy(spec)
+    runtimes = [task['context'].pop('minRuntime', None) for task in compatible['tasks']]
+    parsed = BeakerExperimentSpec.from_json(compatible)
+    for task, runtime in zip(parsed.tasks, runtimes):
+        if runtime is not None:
+            task.context = RuntimeContext(**vars(task.context), min_runtime=runtime)
+    return parsed
 
 
 def save_spec(spec, destination):
@@ -144,14 +166,13 @@ def save_spec(spec, destination):
 
 
 def create_experiment(beaker, args, workspace, name, spec):
-    from beaker import BeakerExperimentSpec
     from beaker.exceptions import BeakerError
     import re
     while True:
         save_spec(spec, args.spec_file)
         try:
             return beaker.experiment.create(name=name, workspace=workspace,
-                                           spec=BeakerExperimentSpec.from_json(copy.deepcopy(spec)))
+                                           spec=parse_spec(spec))
         except BeakerError as error:
             # Budget membership alone does not imply an allocation at every
             # level. A 422 rejects the whole submission before creating a job.
@@ -186,12 +207,12 @@ def main():
         save_spec(spec, args.spec_file)
         print(json.dumps(spec, indent=2))
         return
-    from beaker import Beaker, BeakerExperimentSpec
+    from beaker import Beaker
 
     if git('status', '--porcelain', '--untracked-files=normal'):
         p.error('Commit all project changes before submission; jobs use git archive HEAD')
     # Parse before any upload/launch. The SDK consumes its input dictionary.
-    BeakerExperimentSpec.from_json(copy.deepcopy(spec))
+    parse_spec(spec)
     name = args.name or f'tokenizer-{args.stage}-{uuid.uuid4().hex[:12]}'
     with tempfile.TemporaryDirectory(prefix='tokenizer-source-') as temporary:
         folder = Path(temporary)

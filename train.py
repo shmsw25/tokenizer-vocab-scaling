@@ -32,8 +32,9 @@ from olmo_core.nn.attention import AttentionBackendName
 from olmo_core.nn.transformer import TransformerConfig
 from olmo_core.optim import AdamWConfig, WSD
 from olmo_core.train import Duration, TrainerConfig, prepare_training_environment, teardown_training_environment
-from olmo_core.train.callbacks import CheckpointerCallback, ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
+from olmo_core.train.callbacks import ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
 from olmo_core.train.train_module import TransformerDataParallelConfig, TransformerTrainModuleConfig
+from scripts.training_callbacks import WSDCheckpointerCallback
 
 
 def load_meta(data_dir):
@@ -131,7 +132,9 @@ def main():
             max_duration=Duration.steps(t['max_steps']) if t.get('max_steps') else Duration.epochs(t['epochs']),
             metrics_collect_interval=t.get('logging_steps', 10),
             callbacks={
-                'checkpointer': CheckpointerCallback(save_interval=t.get('save_steps', 10000), save_async=True),
+                'checkpointer': WSDCheckpointerCallback(
+                    save_interval=t.get('save_steps', 10000), save_async=True,
+                    warmup_steps=t['warmup_steps'], decay_fraction=t['decay_fraction']),
                 'config_saver': ConfigSaverCallback(),
                 'wandb': WandBCallback(enabled=t.get('report_to') == 'wandb',
                                       project=t.get('wandb_project', 'tokenizer-scaling'),
@@ -156,6 +159,7 @@ def main():
                 'fit_seconds_this_attempt': time.monotonic() - started,
                 'parameters': sum(p.numel() for p in model.parameters()),
                 'sequence_length': seq_length, 'global_batch_size': global_batch_size,
+                'pre_decay_checkpoint': json.loads((output_dir / 'pre_decay_checkpoint.json').read_text()),
             })
     finally:
         teardown_training_environment()

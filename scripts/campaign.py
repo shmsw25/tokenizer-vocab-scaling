@@ -61,13 +61,34 @@ def ready_nodes(state):
 
 
 def log_progress(lines, stage):
+    # Beaker can pack thousands of carriage-return tqdm updates into one log
+    # message. Select the latest complete update, including after a phase change.
+    lines = [{'timestamp': line['timestamp'], 'message': ANSI.sub('', fragment).strip()}
+             for line in lines for fragment in re.split(r'[\r\n]+', line['message']) if fragment.strip()]
     for line in reversed(lines):
-        text = ANSI.sub('', line['message'])
+        text = line['message']
         match = re.search(r'\[step=(\d+)/(\d+),epoch=[^,\]]+(?:,eta=([^\]]+))?\]', text)
         if match:
             return {'step': int(match[1]), 'total_steps': int(match[2]),
                     'text': f'Step {match[1]}/{match[2]}',
                     'eta': match[3] or 'Not yet estimated', 'observed_at': line['timestamp']}
+        if match := re.search(r'\[([^\[\]]*<[^\[\]]*)\]', text):
+            eta = match[1].split('<', 1)[1].split(',')[0]
+            if text.startswith('Counting records:'):
+                eta += ' for record counting; sample writing follows'
+            elif text.startswith('Sampling records:'):
+                eta += ' for sample writing'
+            return {'text': text[-250:], 'eta': eta, 'observed_at': line['timestamp']}
+        if stage == 'download-data':
+            if text.startswith(('Raw data ready:', 'Sample contains ')):
+                return {'text': text, 'eta': 'Sample complete; finalizing job',
+                        'observed_at': line['timestamp']}
+            if 'repeat_dolma.py' in text or (text.startswith('Sampling ') and
+                                           not text.startswith('Sampling records:')):
+                return {'text': '250GB download complete; preparing the uniform 100GB sample',
+                        'eta': 'Sampling ETA not yet available', 'observed_at': line['timestamp']}
+            if re.search(r'Downloaded [\d,]+ records, ([\d.]+) / 250 GB', text):
+                break  # Current phase is still downloading; estimate its rate below.
     if stage == 'download-data':
         points = []
         for line in lines:
@@ -82,11 +103,6 @@ def log_progress(lines, stage):
                 eta = f'~{hours:.1f} h for download at recent rate; sampling follows'
             return {'text': f'{last[1]:.3f}/250 GB text downloaded', 'eta': eta,
                     'observed_at': datetime.fromtimestamp(last[0], timezone.utc).isoformat()}
-    for line in reversed(lines):
-        text = ANSI.sub('', line['message']).strip()
-        if match := re.search(r'\[([^\[\]]*<[^\[\]]*)\]', text):
-            return {'text': text[-250:], 'eta': match[1].split('<', 1)[1].split(',')[0],
-                    'observed_at': line['timestamp']}
     return {'text': 'Waiting for measurable progress', 'eta': 'Not yet available'}
 
 

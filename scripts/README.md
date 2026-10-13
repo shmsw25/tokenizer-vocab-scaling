@@ -60,7 +60,7 @@ tokenizer_project/
     meta.json
     pipeline.json
   models/<model_size>/default_100GB_<vocab_size>/
-    wsd_lr<lr>_wd<wd>_bs<batch>_seq<length>_seed<seed>_<hash>/
+    wsd_lr<lr>_wd<wd>_bs<batch>_seq<length>_seed<seed>_wt_EmbedWD_<hash>/
 ```
 
 All vocabulary-dependent stages default to `--data-size 100GB`. The optional
@@ -174,6 +174,23 @@ directly; the launcher exposes no alternative scheduler. The context is always
 ```text
 seq_length = round(4096 * tokens_per_byte(target) / tokens_per_byte(32000))
 ```
+
+Every model-training job explicitly sets Beaker `context.minRuntime: 0s`.
+All three model sizes currently tie input embeddings to the output projection
+(`wt`). AdamW applies the configured weight decay to every trainable parameter,
+including that shared matrix (`EmbedWD` for positive WD).
+Each tag is omitted when its corresponding setting is disabled. Training,
+conversion, and evaluation use the same directory naming.
+
+The trainer retains a **full-state pre-decay checkpoint** after step
+`total_steps - round(total_steps * decay_fraction)`, the last full-LR update.
+It writes this permanent checkpoint synchronously before the first reduced-LR
+update, retaining model weights, optimizer, trainer/data-loader position, and RNG
+state for later multi-epoch continuation. `pre_decay_checkpoint.json` records
+its path and boundary; the final checkpoint remains the evaluation checkpoint.
+Very short smoke runs without a full-LR/decay transition record `not_applicable`.
+Continuation from this branch point into a longer schedule is a separate run;
+repeating the original command resumes its latest checkpoint as usual.
 
 Ratios are measured by tokenization over the same raw corpus, including one EOS
 per document. The job validates corpus/split agreement and token file sizes,

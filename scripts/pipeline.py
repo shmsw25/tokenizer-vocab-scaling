@@ -273,8 +273,11 @@ def training_plan(args):
         'raw': raw_signature(raw_file(args)),
     }
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
+    # AdamW uses one default parameter group: embeddings receive the same WD.
+    tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
+    tags += '_EmbedWD' if t['weight_decay'] > 0 else ''
     run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
-                f'seq{seq}_seed{args.seed}_{fingerprint}')
+                f'seq{seq}_seed{args.seed}{tags}_{fingerprint}')
     output = args.root / 'models' / args.model_size / dataset_name(args) / run_name
     return cfg, output
 

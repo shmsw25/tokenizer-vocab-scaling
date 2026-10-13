@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import pipeline
 import submit
 import campaign
-from beaker import BeakerExperimentSpec
 
 
 def args_for(stage, *extra):
@@ -23,10 +22,13 @@ def test_beaker_resources_and_schema(stage):
     args = args_for(stage, *extra)
     pipeline.validate_args(args)
     spec = submit.make_spec(args)
-    parsed = BeakerExperimentSpec.from_json(copy.deepcopy(spec)).to_json()
+    parsed = submit.parse_spec(spec).to_json()
     task = parsed['tasks'][0]
     expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
     assert task['resources']['gpuCount'] == expected_gpus
+    if stage == 'train-model':
+        assert task['context']['minRuntime'] == '0s'
+        assert 'preemptible' not in task['context']
     if stage == 'download-data':
         assert args.cluster is None
         assert task['constraints']['cluster'] == [submit.WEKA_CLUSTERS_PLACEHOLDER]
@@ -111,6 +113,15 @@ def test_scaled_context_fixed_batch_and_output(tmp_path):
     assert '_wu' not in output.name and '_decay' not in output.name and '_e1_' not in output.name
     assert output.parent == tmp_path / 'models/small/default_100GB_48000'
     assert 'lr0.0003_wd0.1_bs256_seq3277_seed42' in output.name
+    assert '_wt_EmbedWD_' in output.name
+    for stage in ('convert-model', 'evaluate-model'):
+        downstream = copy.deepcopy(args)
+        downstream.stage = stage
+        assert pipeline.training_plan(downstream)[1] == output
+    args.weight_decay = 0
+    no_wd_path = pipeline.training_plan(args)[1]
+    assert '_wt_' in no_wd_path.name and 'EmbedWD' not in no_wd_path.name
+    args.weight_decay = None
     args.learning_rate = 0.002
     assert pipeline.training_plan(args)[1] != output
     args.gpus = 2
@@ -174,6 +185,22 @@ def test_wsd_and_patched_embeddings():
                                         tie_word_embeddings=True,
                                         attn_backend=AttentionBackendName.torch).build(init_device='cpu')
     assert model.embeddings.weight is model.lm_head.w_out.weight
+    # Check the actual optimizer group and update, not just a config flag.
+    from olmo_core.optim import AdamWConfig
+    import torch
+    optimizer = AdamWConfig(lr=0.01, weight_decay=0.1, fused=False).build(model)
+    embedding = model.embeddings.weight
+    groups = [g for g in optimizer.param_groups if any(p is embedding for p in g['params'])]
+    assert len(groups) == 1 and groups[0]['weight_decay'] == 0.1
+    original = embedding.detach().clone()
+    embedding.grad = torch.zeros_like(embedding)
+    optimizer.step()
+    torch.testing.assert_close(embedding, original * 0.999)
+    for size in ('small', 'medium', 'medium_large'):
+        cfg = pipeline.read_json(pipeline.REPO / 'configs' / f'{size}.json')
+        assert cfg['model']['tie_word_embeddings'] is True
+        configured = TransformerConfig.llama_like(vocab_size=32000, **cfg['model']).build(init_device='meta')
+        assert configured.embeddings.weight is configured.lm_head.w_out.weight
 
 
 def test_campaign_dependencies_retry_and_report(tmp_path):
@@ -213,3 +240,22 @@ def test_monitor_eta_uses_observed_progress():
                   'message': '[step=100/1000,epoch=1,eta=3h20m] CE loss: 3.1'})
     progress = campaign.log_progress(lines, 'train-model')
     assert progress['eta'] == '3h20m' and progress['step'] == 100
+
+
+def test_sampling_progress_supersedes_completed_download():
+    lines = [{'timestamp': '2026-10-13T00:55:02Z',
+              'message': 'Downloaded 36,565,000 records, 250.001 / 250 GB of text'},
+             {'timestamp': '2026-10-13T00:55:03Z',
+              'message': 'Running: python data/repeat_dolma.py --sample-fraction 0.4'}]
+    assert 'Sampling ETA not yet' in campaign.log_progress(lines, 'download-data')['eta']
+    lines.append({'timestamp': '2026-10-13T00:55:51Z', 'message':
+                  '\rCounting records: 14%|##| 46G/327G [00:53<08:34, 547MB/s]'
+                  '\rCounting records: 46%|####| 150G/327G [02:54<04:53, 601MB/s]'
+                  '\rCounting records: 46%|####| 150G/327G'})
+    progress = campaign.log_progress(lines, 'download-data')
+    assert progress['text'].startswith('Counting records: 46%')
+    assert progress['eta'] == '04:53 for record counting; sample writing follows'
+    lines.append({'timestamp': '2026-10-13T01:02:00Z', 'message':
+                  '\rSampling records: 20%|##| 2.93M/14.6M [01:30<06:00, 32.5k records/s]'
+                  '\rSampling records: 20%|'})
+    assert campaign.log_progress(lines, 'download-data')['eta'] == '06:00 for sample writing'
