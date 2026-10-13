@@ -158,14 +158,18 @@ def parse_spec(spec):
 
     @dataclass
     class RuntimeContext(BeakerTaskContext):
-        min_runtime: str | None = None
+        # The REST API expects a Go time.Duration (integer nanoseconds), unlike
+        # the protobuf/read API and human-readable spec's duration string.
+        min_runtime: int | None = None
 
     compatible = copy.deepcopy(spec)
     runtimes = [task['context'].pop('minRuntime', None) for task in compatible['tasks']]
     parsed = BeakerExperimentSpec.from_json(compatible)
     for task, runtime in zip(parsed.tasks, runtimes):
         if runtime is not None:
-            task.context = RuntimeContext(**vars(task.context), min_runtime=runtime)
+            if runtime != '0s':
+                raise ValueError('Only explicit zero minimum runtime is supported')
+            task.context = RuntimeContext(**vars(task.context), min_runtime=0)
     return parsed
 
 

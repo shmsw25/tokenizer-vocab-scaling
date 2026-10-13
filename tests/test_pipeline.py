@@ -28,7 +28,9 @@ def test_beaker_resources_and_schema(stage):
     expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
     assert task['resources']['gpuCount'] == expected_gpus
     if stage == 'train-model':
-        assert task['context']['minRuntime'] == '0s'
+        assert spec['tasks'][0]['context']['minRuntime'] == '0s'
+        assert task['context']['minRuntime'] == 0  # REST duration is numeric nanoseconds.
+        assert type(task['context']['minRuntime']) is int
         assert 'preemptible' not in task['context']
     if stage in pipeline.RAW_STAGES:
         assert args.cluster is None
