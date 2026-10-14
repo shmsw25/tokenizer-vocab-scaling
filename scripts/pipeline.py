@@ -21,10 +21,11 @@ WARMUP_SEQUENCES = 24 * 1024
 DEFAULT_BATCH_SIZE = 128
 MODEL_MICROBATCHES = {'small': 16, 'medium': 16, 'medium_large': 8}
 MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
-RAW_STAGES = ('download-data', 'sample-pool', 'prepare-validation')
+DCLM_STAGES = ('download-dclm', 'sample-dclm', 'train-dclm-tokenizer')
+RAW_STAGES = ('download-data', 'sample-pool', 'prepare-validation', 'download-dclm', 'sample-dclm')
 POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
 TRAINING_POOLS = ('5GB', '10GB', '20GB')
-STAGES = (*RAW_STAGES, 'train-tokenizer', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
+STAGES = (*RAW_STAGES, 'train-tokenizer', 'train-dclm-tokenizer', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
 EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
@@ -53,6 +54,10 @@ def data_size(value):
 
 def add_stage_arguments(parser, stage):
     parser.add_argument('--root', type=Path, default=Path(DEFAULT_ROOT))
+    if stage in ('download-dclm', 'sample-dclm'):
+        if stage == 'download-dclm':
+            parser.add_argument('--workers', type=positive_int, default=8)
+        return
     if stage == 'sample-pool':
         parser.add_argument('--data-size', required=True, type=data_size)
         parser.add_argument('--sampling-seed', type=int, default=42,
@@ -96,8 +101,10 @@ def add_stage_arguments(parser, stage):
 def validate_args(args):
     if not args.root.is_absolute():
         raise ValueError('--root must be absolute')
-    if args.stage in ('download-data', 'prepare-validation'):
+    if args.stage in ('download-data', 'prepare-validation', 'download-dclm', 'sample-dclm'):
         return
+    if args.stage == 'train-dclm-tokenizer' and (args.data_size not in TRAINING_POOLS or args.vocab_size not in (32000, 64000, 128000)):
+        raise ValueError('DCLM preparation is limited to 5/10/20GB and 32K/64K/128K tokenizers')
     if args.stage == 'sample-pool':
         if Decimal(args.data_size[:-2]) > 100:
             raise ValueError('Subsample size must not exceed the 100GB parent')
@@ -518,7 +525,11 @@ def evaluate_model(args):
 def publish_summary(args):
     """Expose small manifests through Beaker results; large artifacts stay on Weka."""
     summary = {'stage': args.stage, 'revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
-    if args.stage == 'download-data':
+    if args.stage in DCLM_STAGES:
+        from dclm_data import summary as dclm_summary
+        summary_data = dclm_summary(args)
+        summary.update(summary_data)
+    elif args.stage == 'download-data':
         summary['data'] = read_json(args.root / 'raw_text/provenance.json')
     elif args.stage == 'validate-model':
         from validation_data import VERSION
@@ -573,6 +584,11 @@ def main():
     args = parser.parse_args()
     validate_args(args)
     args.root.mkdir(parents=True, exist_ok=True)
+    if args.stage in DCLM_STAGES:
+        from dclm_data import run_stage
+        run_stage(args)
+        publish_summary(args)
+        return
     from validation_data import prepare_validation, tokenize_validation
     from score_validation import score_validation
     {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,

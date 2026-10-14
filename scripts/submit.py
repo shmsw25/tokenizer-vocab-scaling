@@ -20,6 +20,9 @@ WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
 VALIDATION_CLUSTERS = GPU_CLUSTERS
 VALIDATION_GPU_TYPES = GPU_TYPES
 RESOURCES = {
+    'download-dclm': (16, '64 GiB'),
+    'sample-dclm': (4, '32 GiB'),
+    'train-dclm-tokenizer': (64, '128 GiB'),
     'download-data': (4, '32 GiB'),
     'prepare-validation': (16, '64 GiB'),
     'validate-model': (8, '64 GiB'),
@@ -115,7 +118,11 @@ def verify_gpu_clusters(beaker, args, clusters):
 
 def stage_arguments(args):
     result = [args.stage, '--root', str(args.root)]
-    if args.stage == 'sample-pool':
+    if args.stage == 'download-dclm':
+        result += ['--workers', str(args.workers)]
+    elif args.stage == 'sample-dclm':
+        pass
+    elif args.stage == 'sample-pool':
         result += ['--data-size', args.data_size, '--sampling-seed', str(args.sampling_seed)]
     elif args.stage not in ('download-data', 'prepare-validation'):
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]

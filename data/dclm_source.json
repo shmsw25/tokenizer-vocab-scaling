@@ -1,0 +1,14 @@
+{
+  "repo": "mlfoundations/dclm-baseline-1.0",
+  "revision": "a3b142c183aebe5af344955ae20836eb34dcf69b",
+  "data_files": 27838,
+  "compressed_bytes": 7196105155016,
+  "inventory_sha256": "0baf359d6176e3b70285b5fd88829c027480098006a52849498a94816b8be757",
+  "sampling_fraction": 0.01,
+  "sampling_seed": 42,
+  "sampling_unit": "document",
+  "license": "cc-by-4.0",
+  "source_url": "https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0",
+  "minimum_sample_text_bytes": 100000000000,
+  "parent_target_text_bytes": 100000000000
+}

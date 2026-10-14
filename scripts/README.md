@@ -1,5 +1,49 @@
 # Jupiter / Weka / Beaker pipeline
 
+## DCLM data and tokenizer preparation
+
+The separate `dclm_campaign.py` controller has exactly eleven CPU-only jobs:
+one full-source document sample and 100GB parent, one three-pool sampler, and
+nine BPE tokenizer jobs (5/10/20GB × 32K/64K/128K). It cannot create model
+training or evaluation stages. Run `python scripts/dclm_campaign.py --init
+--advance` once, then omit `--init` on subsequent monitoring/advance calls.
+State, receipts, logs, summaries and source audit live in
+`.build/dclm-preparation/`; the existing Dolma campaign is separate.
+
+`data/dclm_source.json` pins the Hugging Face dataset commit and complete shard
+inventory. The worker reads every compressed shard (7.20TB), checks its upstream
+SHA-256, and uses an independently seeded RNG to keep each document with
+probability 0.01. This is a Bernoulli document sample, not shard sampling or
+exactly 1% of the document count. Whole original JSON records are preserved.
+Completed per-shard outputs and document indices are hash-verified on restart;
+interrupted outputs are archived, never silently treated as complete.
+
+Under `/oe-training-default/sewonm/tokenizer_project`:
+
+- `raw_text_dclm/1pct/` contains the global sampled corpus and document index.
+- `raw_text_dclm/100GB/dclm_100gb.jsonl` contains the parent selected from a
+  seeded random document permutation of the complete 1% sample.
+- `raw_text_dclm/{5GB,10GB,20GB}/dclm_<size>.jsonl` contains independent samples
+  from that parent. Sizes measure UTF-8 text only; whole documents produce a
+  recorded overshoot. Samples never repeat documents and need not be nested.
+- `raw_text_dclm/heldout/` preserves the shared 1000-document exclusion used
+  by all three smaller pools. This is not a new 100M-token validation corpus.
+- `tokenizers_dclm/default_<size>_<vocab>/tokenizer.json` uses the same byte-level
+  BPE, EOS, byte alphabet, and round-trip checks as the Dolma tokenizer recipe.
+
+The 1% sample must contain at least 100GB of text before downstream work can
+run. A three-shard pilot estimated approximately 198GB; the final manifest is
+authoritative. If the sample is unexpectedly too small, the job fails while
+preserving its output rather than publishing an undersized parent.
+
+All jobs explicitly request zero GPUs with CUDA disabled, on Saturn/Neptune
+with the existing Weka mount. Admission checks all of sewonm's live and queued
+workloads against the 100-GPU cap and conservatively charges eight reservations
+per CPU job. The admission lock is shared with the original campaign. The 5GB
+tokenizers reserve 1h; other preparation jobs reserve 3h. These are scheduling
+reservations, not execution timeouts. Failed attempts require a diagnosed,
+terminal `--retry-node KEY --advance`, preserving prior receipts.
+
 These scripts submit jobs in `ai2/flex2`. Model workflows run training,
 CPU conversion, and single-GPU evaluation sequentially in **one shell script
 and one Beaker allocation** (`run_model.sh`).
