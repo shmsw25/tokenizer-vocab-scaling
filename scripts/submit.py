@@ -16,6 +16,8 @@ from pipeline import REPO, STAGES, MODEL_STAGES, RAW_STAGES, add_stage_arguments
 GPU_IMAGE = '01KAXVQ0YN242MQ9YEQDQQK512'  # tylerr/olmo-core-tch280cu128-2025-11-25
 CPU_IMAGE = 'python:3.12-slim-bookworm'
 WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
+VALIDATION_CLUSTERS = ('ai2/jupiter', 'ai2/saturn', 'ai2/neptune')
+VALIDATION_GPU_TYPES = {'GPU_TYPE_NVIDIA_H100', 'GPU_TYPE_NVIDIA_A100_80GB', 'GPU_TYPE_NVIDIA_L40S'}
 RESOURCES = {
     'download-data': (4, '32 GiB'),
     'prepare-validation': (16, '64 GiB'),
@@ -59,9 +61,10 @@ def parser():
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
         default_cluster = (None if stage in RAW_STAGES else
-                           'ai2/jupiter' if stage in ('train-model', 'evaluate-model', 'validate-model') else 'ai2/phobos')
+                           list(VALIDATION_CLUSTERS) if stage == 'validate-model' else
+                           'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos')
         s.add_argument('--cluster', nargs='+', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
-                       help='One or more eligible Weka clusters; GPU stages require one cluster')
+                       help='One or more eligible Weka clusters; GPU stages except validate-model require one cluster')
         s.add_argument('--allow-gpu-reservation', action='store_true',
                        help='Allow CPU jobs on GPU clusters while still requesting zero GPUs')
         s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'),
@@ -88,6 +91,24 @@ def parser():
 def cluster_names(args):
     value = args.cluster
     return ([value] if isinstance(value, str) else value) or []
+
+
+def validate_placement(args):
+    if gpu_count(args) and (not cluster_names(args) or
+                           (args.stage != 'validate-model' and len(cluster_names(args)) != 1)):
+        raise ValueError('GPU stages other than validate-model require exactly one --cluster')
+
+
+def verify_gpu_clusters(beaker, args, clusters):
+    """Check every candidate cluster; only standalone validation allows A100/L40S."""
+    from google.protobuf.json_format import MessageToDict
+    allowed = VALIDATION_GPU_TYPES if args.stage == 'validate-model' else {'GPU_TYPE_NVIDIA_H100'}
+    for cluster in clusters:
+        if not any(MessageToDict(node).get('nodeResources', {}).get('gpuType') in allowed
+                   and len(node.node_resources.gpu_ids) >= gpu_count(args)
+                   for node in beaker.node.list(cluster=cluster)):
+            raise RuntimeError(f'No qualifying GPU nodes in requested cluster {cluster.name}; '
+                               f'allowed GPU types: {sorted(allowed)}')
 
 
 def stage_arguments(args):
@@ -254,8 +275,7 @@ def main():
         validate_args(args)
         if args.cpus <= 0:
             raise ValueError('--cpus must be positive')
-        if gpu_count(args) and len(cluster_names(args)) != 1:
-            raise ValueError('GPU stages require exactly one --cluster')
+        validate_placement(args)
         args.root.resolve().relative_to('/oe-training-default')
     except ValueError as e:
         p.error(f'{e}; Beaker output must be under the /oe-training-default Weka mount')
@@ -290,12 +310,7 @@ def main():
             if args.stage in (*MODEL_STAGES, 'validate-model'):
                 b.image.get(args.image)
             if gpu_count(args):
-                from google.protobuf.json_format import MessageToDict
-                h100_nodes = [n for n in b.node.list(cluster=clusters[0])
-                              if MessageToDict(n).get('nodeResources', {}).get('gpuType')
-                              == 'GPU_TYPE_NVIDIA_H100' and len(n.node_resources.gpu_ids) >= gpu_count(args)]
-                if not h100_nodes:
-                    raise RuntimeError('No qualifying H100 nodes in the requested cluster')
+                verify_gpu_clusters(b, args, clusters)
             elif (args.stage not in RAW_STAGES and not args.allow_gpu_reservation
                   and any(cluster.node_shape.gpu_count for cluster in clusters)):
                 raise ValueError('CPU jobs on GPU clusters require --allow-gpu-reservation; GPU request remains 0')

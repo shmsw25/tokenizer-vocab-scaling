@@ -466,7 +466,7 @@ from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Model training defaults to `urgent
 priority; other stages default to `normal`. Model-training jobs default to
 `minRuntime: 8h` for 32K vocabulary and `0s` otherwise. Other stages are non-preemptible
 unless `--preemptible` is supplied. CPU scripts expose
-no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
+no GPU-count flag and always emit `gpuCount: 0`. Training and chained evaluation submissions
 check H100 availability and use the requested cluster as their placement
 constraint, without a hostname list. The campaign uses `ai2/jupiter` for training;
 verify the actual GPU assignment when each job starts. GPU clusters use
@@ -537,7 +537,15 @@ preserve the exact path and checkpoint configuration. This flag preserves the
 training recipe only: final Dolma evaluation always uses the shared corpus.
 
 The one-time backfill uses one-GPU `validate-model` jobs after each existing
-checkpoint's conversion/evaluation completes. They replace the current
+checkpoint's conversion/evaluation completes. Standalone validation may run on
+Jupiter (H100), Saturn (A100 80GB), or Neptune (L40S), with Weka access and the
+same scorer, batch size, precision, and data checks. Each checkpoint has one
+workload eligible for all three clusters, not duplicate jobs on each cluster.
+The controller records this policy in `study.validation_placement_clusters`;
+existing queued allocations must be confirmed canceled before relocation.
+New validation allocations retain the three-hour minimum and the all-user
+100-GPU admission check. Training and its chained evaluation stay on Jupiter.
+Validation jobs replace the current
 `evaluation/dolma_bpb.json` and the Dolma entry in `evaluation_summary.json`,
 preserving other benchmarks and keeping old scores only in audit history.
 The controller tracks completion in `study.validation_backfill` and deletes

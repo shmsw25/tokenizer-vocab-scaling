@@ -40,7 +40,8 @@ def test_beaker_resources_and_schema(stage):
         assert resolved['tasks'][0]['constraints']['cluster'] == ['ai2/ceres', 'ai2/phobos']
         assert resolved['tasks'][0]['resources']['gpuCount'] == 0
     else:
-        assert task['constraints']['cluster'] == ['ai2/jupiter' if expected_gpus else 'ai2/phobos']
+        assert task['constraints']['cluster'] == (list(submit.VALIDATION_CLUSTERS) if stage == 'validate-model'
+                                                 else ['ai2/jupiter' if expected_gpus else 'ai2/phobos'])
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]
