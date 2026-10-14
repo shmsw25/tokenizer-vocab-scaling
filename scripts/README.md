@@ -318,6 +318,9 @@ dependency with `python -m pip install -r requirements-report.txt` (included in
 tokenizer counts, three FLOPs plots with a metric selector, and a run grid grouped
 by pool, K-formatted vocabulary, and model. Each LR/WD run shows its training state
 and held-out Dolma BPB, BLiMP, ARC-E, HellaSwag, and PIQA together.
+The compact grid reserves 25% of the table width for pool/vocabulary/model and
+75% for runs. Each run is one line with scientific-notation LR (for example
+`2e-03`), WD, state, and the five scores aligned beneath their headers.
 The total-training-tokens table shows exact training-split counts and percentage
 changes relative to the same pool's 32K tokenizer, before dropping the incomplete
 final batch. Detailed job status and ETA stay in campaign state and hourly chat
