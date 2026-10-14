@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import adaptive_study as study
 import campaign
 import report
 from loss_curve_health import analyze_history, invalid_result, needs_review, review_node
+from loss_curve_health import beaker_history_rows, cache_beaker_history, discover_beaker_history, logged_wandb_links
 from test_adaptive_study import fixture, finish
 from test_report import state_fixture
 
@@ -148,3 +150,57 @@ def test_user_invalidated_endpoint_is_excluded_from_backfill_without_canceling_v
     assert set(s['nodes']) == set(before)
     assert s['nodes'][key] == before[key]
     assert s['nodes'][validation] == before[validation]  # Keep the queued receipt intact.
+
+
+def test_beaker_per_step_history_preserves_adjacency_and_validation_echoes(tmp_path):
+    lines = [{'message': 'REPORT_METRICS ' + json.dumps({'train_step': r['_step'],
+             'train_ce': r['train/CE loss'], 'step': r['_step']})} for r in curve(7., 8)]
+    lines.extend([{'message': 'REPORT_METRICS {"step": 999, "validation_step": 999, "train_step": 600, "train_ce": 3}'},
+                  {'message': 'REPORT_METRICS []'}, {'message': 'REPORT_METRICS {"train_step":'}])
+    rows = beaker_history_rows(lines)
+    assert len(rows) == 600 and rows[-1]['_step'] == 600
+    evidence = cache_beaker_history(lines, tmp_path, 'workload', 'job', 'now')
+    node = {'status': 'succeeded', 'beaker_loss_histories': [evidence],
+            'reported_metrics': {'train_ce': 3.}, 'receipt': {'workload_id': 'workload'}}
+    before = copy.deepcopy(node)
+    review_node(node, None, tmp_path, 'now')
+    assert invalid_result(node) and not needs_review(node)
+    assert node['loss_curve_review']['sources'][0]['longest_spike_streak'] == 8
+    assert {k:node[k] for k in before} == before
+    Path(evidence['history_file']).write_text('{}')
+    import pytest
+    with pytest.raises(ValueError, match='hash mismatch'):
+        review_node(node, None, tmp_path, 'later')
+
+
+def test_beaker_sparse_or_conflicting_data_never_manufactures_a_sustained_spike():
+    import pytest
+    lines = [{'message': 'REPORT_METRICS ' + json.dumps({'train_step': r['_step'],
+             'train_ce': r['train/CE loss']})} for r in curve(10., 10) if r['_step'] % 2 == 0]
+    assert analyze_history(beaker_history_rows(lines))['status'] == 'review_needed'
+    lines.append({'message': 'REPORT_METRICS {"train_step": 600, "train_ce": 8}'})
+    with pytest.raises(ValueError, match='Conflicting'):
+        beaker_history_rows(lines)
+
+
+def test_discovery_uses_published_links_and_caches_terminal_beaker_fallback(tmp_path):
+    lines = [{'message': 'REPORT_METRICS ' + json.dumps({'train_step': r['_step'],
+             'train_ce': r['train/CE loss']})} for r in curve()]
+    calls = []
+    job = SimpleNamespace(id='job', status=SimpleNamespace(HasField=lambda field: True))
+    b = SimpleNamespace(workload=SimpleNamespace(get=lambda wid: SimpleNamespace(
+        experiment=SimpleNamespace(tasks=['task']))), job=SimpleNamespace(
+        list=lambda **kwargs: [job], logs=lambda *args, **kwargs: (
+            calls.append('logs') or [SimpleNamespace(message=l['message'].encode()) for l in lines])))
+    node = {'status': 'succeeded', 'receipt': {'workload_id': 'workload'},
+            'summary': {'config': {'training': {'report_to': 'none'}}}}
+    discover_beaker_history(node, b, tmp_path, 'now')
+    assert node['wandb_discovery']['status'] == 'disabled'
+    assert 'reported_metrics' not in node
+    discover_beaker_history(node, b, tmp_path, 'later')
+    assert calls == ['logs']
+    review_node(node, None, tmp_path, 'now')
+    assert invalid_result(node)
+    assert logged_wandb_links([{'message': 'wandb: View run at https://forge.coreweave.com/wandb/ai2-llm/tokenizer-scaling/runs/real123?nw=1'}]) == {
+        'ai2-llm/tokenizer-scaling/real123': 'https://forge.coreweave.com/wandb/ai2-llm/tokenizer-scaling/runs/real123'}
+    assert logged_wandb_links([{'message': 'https://beaker.org/ex/workload'}]) == {}

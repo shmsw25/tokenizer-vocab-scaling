@@ -55,6 +55,51 @@ def test_lr_bracket_and_transfer_without_retuning():
     assert all(s['nodes'][k].get('study_role')!='superseded_plan' for k in campaign.ready_nodes(s))
 
 
+def test_retired_rate_and_explicit_five_gb_grid_do_not_expand_scope():
+    s = fixture()
+    s['study'].update(excluded_learning_rates=[.002, .004], fixed_learning_rates={'medium_large': .001},
+        additional_learning_rates={'5GB': {'medium_large': [.0005]}},
+        pool_min_runtime={'5GB': '1h'},
+        five_gb_lr_search={'runs': {}},
+        pool_lr_search={'pools': ['10GB', '20GB'], 'learning_rates': [.001, .002]})
+    for model in study.MODELS:
+        for vocab in (32000, 64000, 128000):
+            pair = f'{model}:{vocab}'
+            old = s['study']['brackets'][pair]['baseline']
+            s['study']['selected'][pair] = {'key': old, 'lr': .002}
+            base = study.model_run(s, '5GB', model, vocab, .001, role='existing')
+            finish(s, base, 1.)
+            s['nodes'][study.eval_key(base)]['status'] = 'succeeded'
+            trials = [study.model_run(s, '5GB', model, vocab, .0005, role='explicit',
+                                      embedding_weight_decay=wd) for wd in (.1, 0.)]
+            for key in trials:
+                assert s['nodes'][key]['min_runtime'] == '1h'
+                args = submit.parser().parse_args([*s['nodes'][key]['arguments'],
+                                                   *campaign.placement_arguments(s['nodes'][key])])
+                task = submit.parse_spec(submit.make_spec(args)).to_json()['tasks'][0]
+                assert task['context']['minRuntime'] == 3_600_000_000_000
+                assert task['resources']['gpuCount'] == 8
+            s['study']['five_gb_lr_search']['runs'][pair] = [base, *trials]
+    study.advance_plan(s)
+    assert s['study']['phase'] == 'pool_lr_search'
+    assert all(v['lr'] != .002 for v in s['study']['selected'].values())
+    assert all(not study.excluded_run(s, s['nodes'][k]) for k in s['study']['required'])
+    assert all(not study.excluded_run(s, s['nodes'][k]) for k in campaign.ready_nodes(s))
+    assert all(n['data_size'] == '5GB' for n in s['nodes'].values()
+               if n['stage'] == 'train-model' and study.arg(n, '--learning-rate') == '0.0005')
+    pair = 'medium_large:128000'
+    zero = s['study']['five_gb_lr_search']['runs'][pair][-1]
+    finish(s, zero, .8);s['nodes'][study.eval_key(zero)]['status'] = 'succeeded'
+    study.advance_plan(s)
+    assert s['study']['selected'][pair]['key'] == zero
+    assert s['study']['selected'][pair]['embedding_weight_decay'] == 0
+    count = len(s['nodes']);study.advance_plan(s);assert len(s['nodes']) == count
+    with pytest.raises(ValueError, match='fixed'):
+        study.model_run(s, '10GB', 'medium_large', 32000, .0005, role='unauthorized')
+    with pytest.raises(ValueError, match='excluded'):
+        study.model_run(s, '5GB', 'small', 32000, .002, role='retired')
+
+
 def test_branch_requires_manifest_and_matching_chain_arguments():
     s=fixture()
     key=study.model_run(s,'100GB','medium_large',128000,.0005,role='100gb_trunk')

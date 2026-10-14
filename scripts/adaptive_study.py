@@ -58,7 +58,8 @@ def cpu_node(state, key, stage, pool, vocab=None, dependencies=()):
         args += ['--vocab-size', str(vocab)]
     state['nodes'][key] = dict(stage=stage, arguments=args, data_size=pool, vocab_size=vocab,
         model_size=None, status='pending', dependencies=list(dependencies), expected_gpus=0,
-        min_runtime='3h', placement_clusters=['ai2/saturn', 'ai2/neptune'], allow_gpu_reservation=True)
+        min_runtime=state['study'].get('pool_min_runtime', {}).get(pool, '3h'),
+        placement_clusters=['ai2/saturn', 'ai2/neptune'], allow_gpu_reservation=True)
     return key
 
 
@@ -78,7 +79,8 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
     if not learning_rate_allowed(state, lr):
         raise ValueError(f'Learning rate {lr:g} was excluded by the user')
     fixed_lr = state['study'].get('fixed_learning_rates', {}).get(model)
-    if fixed_lr is not None and lr != fixed_lr:
+    additional = state['study'].get('additional_learning_rates', {}).get(pool, {}).get(model, [])
+    if fixed_lr is not None and lr != fixed_lr and lr not in additional:
         raise ValueError(f'{model} uses the user-fixed learning rate {fixed_lr}')
     # Reuse any already-submitted scientifically matching one-epoch run.
     for key, node in nodes.items():
@@ -134,7 +136,8 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
         nodes[child] = dict(stage=stage, arguments=[stage, *common], status='pending',
             dependencies=deps, model_size=model, vocab_size=vocab, data_size=pool,
             expected_gpus=8 if prefix == 'train' else int(prefix == 'eval'),
-            min_runtime='3h', priority='urgent', placement_clusters=['ai2/jupiter'],
+            min_runtime=state['study'].get('pool_min_runtime', {}).get(pool, '3h'),
+            priority='urgent', placement_clusters=['ai2/jupiter'],
             study_role=role, epoch_fraction=fraction, study_parent=parent)
         if prefix == 'train':
             nodes[child].update(chain_evaluation=True, wandb_secret='SEWONM_WANDB_API_KEY',
@@ -198,7 +201,11 @@ def advance_pool_lr_search(state, vocabs, required):
                 coordinate = f'{pool}:{model}:{vocab}'
                 rates = ([study['fixed_learning_rates'][model]]
                          if model in study.get('fixed_learning_rates', {}) else search['learning_rates'])
-                keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial') for lr in rates]
+                keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial')
+                        for lr in rates if learning_rate_allowed(state, lr)]
+                if not keys:
+                    ready = False
+                    continue
                 search.setdefault('runs', {})[coordinate] = keys
                 for key in keys:
                     if invalid_result(nodes[key]) or (nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled')):
@@ -222,6 +229,34 @@ def advance_pool_lr_search(state, vocabs, required):
     return ready
 
 
+def select_explicit_five_gb_trials(state, pair, required):
+    """Evaluate only the user's recorded candidates, without expanding their grid."""
+    study, nodes = state['study'], state['nodes']
+    keys = [key for key in study['five_gb_lr_search']['runs'][pair]
+            if not excluded_run(state, nodes[key])]
+    ready = bool(keys)
+    scores = []
+    for key in keys:
+        node = nodes[key]
+        score = completed_score(node)
+        if invalid_result(node) or (node.get('health_stop') and node['status'] in ('failed', 'canceled')):
+            required.discard(eval_key(key))
+        else:
+            required.add(eval_key(key))
+            ready &= nodes[eval_key(key)]['status'] == 'succeeded'
+        ready &= score is not None
+        if score is not None and math.isfinite(score):
+            scores.append((score, key))
+    if scores:
+        score, winner = min(scores)
+        study['selected'][pair] = dict(key=winner, lr=float(arg(nodes[winner], '--learning-rate')),
+            validation_bpb=score, candidates=keys, selection='explicit_5gb_hyperparameters',
+            embedding_weight_decay=float(arg(nodes[winner], '--embedding-weight-decay', .1)))
+    else:
+        study['selected'].pop(pair, None)
+    return ready and bool(scores)
+
+
 def advance_plan(state):
     study = state.get('study')
     if not study:
@@ -229,10 +264,10 @@ def advance_plan(state):
     # Invalidation must also revoke cached winners and transfer decisions.
     for choices in (study.get('selected', {}), study.get('pool_lr_search', {}).get('selected', {})):
         for coordinate, choice in list(choices.items()):
-            if invalid_result(state['nodes'][choice['key']]):
+            if invalid_result(state['nodes'][choice['key']]) or excluded_run(state, state['nodes'][choice['key']]):
                 del choices[coordinate]
     for coordinate, key in list(study.get('transfers', {}).items()):
-        if invalid_result(state['nodes'][key]):
+        if invalid_result(state['nodes'][key]) or excluded_run(state, state['nodes'][key]):
             del study['transfers'][coordinate]
     sync_shared_validation(state)
     nodes = state['nodes']
@@ -242,6 +277,9 @@ def advance_plan(state):
     for model in MODELS:
         for vocab in vocabs:
             pair = f'{model}:{vocab}'
+            if pair in study.get('five_gb_lr_search', {}).get('runs', {}):
+                all_selected &= select_explicit_five_gb_trials(state, pair, required)
+                continue
             fixed_lr = study.get('fixed_learning_rates', {}).get(model)
             if fixed_lr is not None:
                 key = model_run(state, '5GB', model, vocab, fixed_lr, role='fixed_lr')
@@ -322,7 +360,8 @@ def advance_plan(state):
     hundred = study.setdefault('hundred_gb', {})
     for model in MODELS:
         for vocab in vocabs:
-            pair = f'{model}:{vocab}';lr = study['selected'][pair]['lr']
+            pair = f'{model}:{vocab}'
+            lr = study.get('fixed_learning_rates', {}).get(model, study['selected'][pair]['lr'])
             trunk = model_run(state, '100GB', model, vocab, lr, role='100gb_trunk')
             hundred[pair] = trunk
             required.add(eval_key(trunk))
@@ -418,15 +457,30 @@ def live_gpu_budget(state):
 
 def monitor_wandb(state):
     """Read the actual W&B runs as well as retaining the in-job loss guard."""
-    from loss_curve_health import history_paths, needs_review, review_node
+    from loss_curve_health import discover_beaker_history, history_paths, needs_review, review_node
     from pipeline import REPO
     cache_dir = REPO / '.build/loss-curve-health/histories'
     candidates = [n for n in state['nodes'].values() if n['stage'] == 'train-model'
                   and not excluded_run(state, n) and not n.get('legacy_architecture')
                   and n.get('study_role') != 'superseded_plan' and n['status'] != 'canceled']
-    for node in candidates:
-        if node['status'] in ('succeeded', 'failed') and not history_paths(node) and needs_review(node):
-            review_node(node, None, cache_dir, now())
+    missing = [n for n in candidates if not n.get('reported_metrics', {}).get('wandb_path') and n.get('receipt')
+               and n['status'] in ('running', 'succeeded', 'failed')]
+    if missing:
+        try:
+            from beaker import Beaker
+            with Beaker.from_env(default_workspace=state['workspace'], check_for_upgrades=False) as b:
+                for node in missing:
+                    try:
+                        discover_beaker_history(node, b, cache_dir / 'beaker', now())
+                        if not history_paths(node) and needs_review(node):
+                            review_node(node, None, cache_dir, now())
+                        node.pop('loss_history_discovery_error', None)
+                    except Exception as error:
+                        node['loss_history_discovery_error'] = type(error).__name__
+        except Exception as error:
+            state['loss_history_discovery_error'] = type(error).__name__ + ': Beaker history discovery failed'
+        else:
+            state.pop('loss_history_discovery_error', None)
     targets = [n for n in candidates if history_paths(n)
                and (n['status'] not in ('succeeded', 'failed', 'canceled')
                     or not n.get('wandb_final_checked') or needs_review(n))]
@@ -446,6 +500,7 @@ def monitor_wandb(state):
                 path = node.get('reported_metrics', {}).get('wandb_path')
                 run = api.run(path) if path else None
                 if run is not None:
+                    node.setdefault('reported_metrics', {})['wandb_url'] = run.url
                     metrics = dict(run.summary)
                     node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
                         'metrics': {k: v for k, v in metrics.items() if k in

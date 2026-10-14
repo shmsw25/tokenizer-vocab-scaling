@@ -153,6 +153,7 @@ def build_report_data(state):
                      'shared_validation': node.get('shared_validation'),
                      'previous_attempts': node.get('previous_attempts', []),
                      'wandb_url': node.get('reported_metrics', {}).get('wandb_url'),
+                     'wandb_discovery': node.get('wandb_discovery'),
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
                      'microbatch': runtime_batch.get('micro_batch_size', cfg['training']['micro_batch_size']),
                      'runtime_batch': runtime_batch or None,

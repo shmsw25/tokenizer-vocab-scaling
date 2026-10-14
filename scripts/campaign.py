@@ -382,13 +382,20 @@ def refresh(state, folder):
                 if node['stage'] == 'prepare-validation':
                     record_validation_publications(node, lines)
                 if node['stage'] == 'train-model':
+                    from loss_curve_health import logged_wandb_links
+                    links = logged_wandb_links(lines)
+                    if len(links) == 1 and not node.get('reported_metrics', {}).get('wandb_path'):
+                        path, url = next(iter(links.items()))
+                        node.setdefault('reported_metrics', {}).update(wandb_path=path, wandb_url=url)
                     for line in lines:
                         for fragment in line['message'].splitlines():
                             if 'REPORT_METRICS ' in fragment:
                                 try:
                                     metrics = json.loads(fragment.split('REPORT_METRICS ', 1)[1])
                                     if isinstance(metrics, dict) and metrics.get('step', 0) >= node.get('reported_metrics', {}).get('step', 0):
-                                        node['reported_metrics'] = metrics
+                                        provenance = {k: v for k, v in node.get('reported_metrics', {}).items()
+                                                      if k in ('wandb_path', 'wandb_url')}
+                                        node['reported_metrics'] = {**provenance, **metrics}
                                 except (ValueError, TypeError):
                                     pass  # A truncated log line is not a metric observation.
                             for prefix, field in [('WSD_BRANCH_READY ', 'branch_checkpoints'),
@@ -542,7 +549,8 @@ def retry_node(state, key):
         node.pop(field, None)
     node['status'] = 'pending'
     if node['stage'] == 'train-model' and state.get('study', {}).get('training_placement_clusters'):
-        node.update(placement_clusters=list(state['study']['training_placement_clusters']), min_runtime='3h')
+        node.update(placement_clusters=list(state['study']['training_placement_clusters']),
+                    min_runtime=state['study'].get('pool_min_runtime', {}).get(node.get('data_size'), '3h'))
     node['name'] = f"{state['campaign']}-{key.replace('_', '-')}-retry{len(history)}"
 
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 
@@ -97,10 +98,112 @@ def history_paths(node):
         if (p := source.get('reported_metrics', {}).get('wandb_path'))))
 
 
+def logged_wandb_links(lines):
+    """Only return links actually published by this Beaker job."""
+    found = {}
+    pattern = r'https://(?:wandb\.ai/|forge\.coreweave\.com/wandb/)([\w.-]+/[\w.-]+)/runs/([\w-]+)'
+    for line in lines:
+        for match in re.finditer(pattern, line['message']):
+            found[f'{match[1]}/{match[2]}'] = match[0]
+    return found
+
+
+def beaker_history_rows(lines):
+    """Use explicit train_step values; validation echoes cannot create steps."""
+    points = {}
+    for line in lines:
+        for fragment in line['message'].splitlines():
+            if 'REPORT_METRICS ' not in fragment:
+                continue
+            try:
+                metrics = json.loads(fragment.split('REPORT_METRICS ', 1)[1])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(metrics, dict):
+                continue
+            step, loss = metrics.get('train_step'), metrics.get('train_ce')
+            if (not isinstance(step, int) or isinstance(step, bool)
+                    or not isinstance(loss, (int, float)) or isinstance(loss, bool)):
+                continue
+            if step in points and points[step] != loss:
+                raise ValueError('Conflicting training losses for one optimizer step')
+            points[step] = loss
+    return [{'_step': step, 'train/CE loss': loss} for step, loss in sorted(points.items())]
+
+
+def cache_beaker_history(lines, cache_dir, workload_id, job_id, checked_at):
+    rows = beaker_history_rows(lines)
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir / (hashlib.sha256(job_id.encode()).hexdigest() + '.json')
+    payload = {'workload_id': workload_id, 'job_id': job_id,
+               'fetched_at': checked_at, 'rows': rows}
+    temporary = cache.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, sort_keys=True) + '\n')
+    temporary.replace(cache)
+    return {'kind': 'beaker', 'workload_id': workload_id, 'job_id': job_id,
+            'url': f'https://beaker.org/ex/{workload_id}', 'history_file': str(cache),
+            'history_sha256': hashlib.sha256(cache.read_bytes()).hexdigest()}
+
+
+def discover_beaker_history(node, beaker, cache_dir, checked_at):
+    """Recover published W&B links or per-step CE without creating W&B runs."""
+    receipt_id = node.get('receipt', {}).get('workload_id')
+    terminal = node['status'] in ('succeeded', 'failed', 'canceled')
+    prior = node.get('wandb_discovery', {})
+    if (terminal and prior.get('receipt_id') == receipt_id and prior.get('complete')
+            and all(Path(x['history_file']).exists() for x in node.get('beaker_loss_histories', []))):
+        return
+    histories, attempts = [], []
+    seen = set()
+    for source in [*node.get('previous_attempts', []), node]:
+        wid = source.get('receipt', {}).get('workload_id')
+        if not wid or wid in seen:
+            continue
+        seen.add(wid)
+        status = source.get('job_status', {})
+        if status.get('status') == 'STATUS_CANCELED' and not status.get('started'):
+            attempts.append({'workload_id': wid, 'status': 'never_started'})
+            continue
+        try:
+            workload = beaker.workload.get(wid)
+            for task in workload.experiment.tasks:
+                for job in beaker.job.list(task=task):
+                    if not job.status.HasField('started'):
+                        continue
+                    lines = [{'message': line.message.decode(errors='replace')}
+                             for line in beaker.job.logs(job, follow=False)]
+                    links = logged_wandb_links(lines)
+                    # Multiple segments remain explicit, rather than assigning an arbitrary one.
+                    if len(links) == 1 and not source.get('reported_metrics', {}).get('wandb_path'):
+                        path, url = next(iter(links.items()))
+                        source.setdefault('reported_metrics', {}).update(wandb_path=path, wandb_url=url)
+                    if wid == receipt_id and source is not node:
+                        raise ValueError('Current receipt also belongs to a previous attempt')
+                    histories.append(cache_beaker_history(lines, cache_dir, wid, job.id, checked_at))
+                    attempts.append({'workload_id': wid, 'job_id': job.id, 'wandb_links': links})
+        except Exception as error:
+            attempts.append({'workload_id': wid, 'error': type(error).__name__})
+    # Preserve any earlier source if a temporary API failure prevents fetching it.
+    by_job = {x['job_id']: x for x in node.get('beaker_loss_histories', [])}
+    by_job.update({x['job_id']: x for x in histories})
+    node['beaker_loss_histories'] = list(by_job.values())
+    report_to = node.get('summary', {}).get('config', {}).get('training', {}).get('report_to')
+    node['wandb_discovery'] = {'receipt_id': receipt_id, 'checked_at': checked_at,
+        'complete': terminal and any(x['workload_id'] == receipt_id for x in histories),
+        'status': 'found' if history_paths(node) else 'disabled' if report_to == 'none' else 'not_found',
+        'report_to': report_to, 'attempts': attempts}
+
+
+def beaker_history_hashes(node):
+    return [x['history_sha256'] for x in node.get('beaker_loss_histories', [])]
+
+
 def needs_review(node):
     review = node.get('loss_curve_review', {})
     return (review.get('policy_version') != POLICY['version']
             or review.get('paths') != history_paths(node)
+            or review.get('beaker_history_hashes', []) != beaker_history_hashes(node)
             or not review.get('terminal') or review.get('error'))
 
 
@@ -127,13 +230,22 @@ def review_node(node, api, cache_dir, checked_at, current_run=None):
             temporary.write_text(json.dumps(payload, sort_keys=True) + '\n')
             temporary.replace(cache)
         entity, project, run_id = path.split('/')
-        sources.append({'path': path, 'url': f'https://wandb.ai/{entity}/{project}/runs/{run_id}',
+        sources.append({'kind': 'wandb', 'path': path, 'url': f'https://wandb.ai/{entity}/{project}/runs/{run_id}',
                         'history_file': str(cache), 'history_sha256': hashlib.sha256(cache.read_bytes()).hexdigest(),
                         **analyze_history(rows, warmup)})
+    for evidence in node.get('beaker_loss_histories', []):
+        cache = Path(evidence['history_file'])
+        if hashlib.sha256(cache.read_bytes()).hexdigest() != evidence['history_sha256']:
+            raise ValueError('Beaker loss-history hash mismatch')
+        payload = json.loads(cache.read_text())
+        if (payload['job_id'], payload['workload_id']) != (evidence['job_id'], evidence['workload_id']):
+            raise ValueError('Beaker loss-history identity mismatch')
+        sources.append({**evidence, **analyze_history(payload['rows'], warmup)})
     available = any(x['observations'] for x in sources)
     status = ('unhealthy' if any(x['status'] == 'unhealthy' for x in sources)
               else 'review_needed' if any(x['status'] == 'review_needed' for x in sources)
               else 'no_spike_detected' if available else 'unavailable')
     node['loss_curve_review'] = {'policy_version': POLICY['version'], 'status': status,
-        'checked_at': checked_at, 'paths': paths, 'terminal': terminal, 'sources': sources}
+        'checked_at': checked_at, 'paths': paths, 'terminal': terminal, 'sources': sources,
+        'beaker_history_hashes': beaker_history_hashes(node)}
     # No mutation of receipts, training status, metrics, LR, or human decisions.
