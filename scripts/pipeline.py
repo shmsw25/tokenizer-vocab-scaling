@@ -74,6 +74,12 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--max-steps', type=positive_int,
                             help='Optional short run; overrides the epoch budget')
         parser.add_argument('--no-compile', action='store_true')
+        parser.add_argument('--epoch-fraction', type=positive_float, default=1.0)
+        parser.add_argument('--decay-horizons', type=float, nargs='+', default=[])
+        parser.add_argument('--branch-from', type=Path)
+        parser.add_argument('--wandb-project')
+        parser.add_argument('--health-check', action='store_true')
+        parser.add_argument('--eval-interval', type=positive_int)
     if stage == 'evaluate-model':
         parser.add_argument('--evals', nargs='+', choices=EVALS, default=list(EVALS))
 
@@ -84,12 +90,16 @@ def validate_args(args):
     if args.stage == 'download-data':
         return
     if args.stage == 'sample-pool':
-        if Decimal(args.data_size[:-2]) >= 100:
-            raise ValueError('Subsample size must be less than the 100GB parent')
+        if Decimal(args.data_size[:-2]) > 100:
+            raise ValueError('Subsample size must not exceed the 100GB parent')
         return
     if args.vocab_size < 257:
         raise ValueError('--vocab-size must include 256 byte symbols and EOS (at least 257)')
     if args.stage in MODEL_STAGES:
+        if not 0 < args.epoch_fraction <= 1 or any(not 0 < f < 1 for f in args.decay_horizons):
+            raise ValueError('Epoch fraction must be in (0, 1]; decay horizons in (0, 1)')
+        if args.branch_from and (args.epoch_fraction == 1 or args.decay_horizons):
+            raise ValueError('Decay branches require a fractional horizon and no child horizons')
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', args.model_size):
             raise ValueError('--model-size must be a config name, without directories')
         if not (REPO / 'configs' / f'{args.model_size}.json').is_file():
@@ -113,6 +123,8 @@ def tokenized_dir(args, vocab=None):
 
 
 def raw_file(args):
+    if args.data_size == '100GB':
+        return args.root / 'raw_text/100GB/training/dolma3_100gb.jsonl'
     return args.root / 'raw_text' / args.data_size / f'dolma3_{args.data_size.lower()}.jsonl'
 
 
@@ -290,6 +302,21 @@ def training_plan(args):
     t['warmup_steps'] = WARMUP_SEQUENCES // args.batch_size
     t['decay_fraction'] = 0.1
     t['decay_min_lr'] = 0.0
+    epoch_steps = meta['train']['tokens'] // (seq * args.batch_size)
+    if args.epoch_fraction != 1:
+        t['max_steps'] = math.floor(epoch_steps * args.epoch_fraction)
+        if t['max_steps'] - round(t['max_steps'] * .1) <= t['warmup_steps']:
+            raise ValueError('Fractional horizon is too short for fixed warmup and decay')
+    if args.decay_horizons:
+        t['decay_horizons'] = sorted(set(args.decay_horizons))
+    if args.wandb_project:
+        t.update(report_to='wandb', wandb_project=args.wandb_project)
+    if args.health_check:
+        t['health_check'] = True
+    if args.eval_interval:
+        t['eval_steps'] = args.eval_interval
+    if args.branch_from:
+        t['branch_from'] = str(args.branch_from)
     cfg['pipeline'] = {
         'scheduler': 'WSD', 'reference_vocab_size': REFERENCE_VOCAB,
         'reference_sequence_length': 4096, 'reference_tokens_per_byte': baseline['tokens_per_byte'],
@@ -320,6 +347,21 @@ def train_model(args):
         if config_path.exists() and read_json(config_path) != cfg:
             raise ValueError('Refusing to resume with a changed config')
         write_json(config_path, cfg)
+        if args.branch_from:
+            parent = read_json(args.branch_from / 'launch_config.json')
+            # Only the horizon, checkpoint source, and diagnostic cadence may differ.
+            def scientific_config(value):
+                value = json.loads(json.dumps(value))
+                for key in ('max_steps', 'decay_horizons', 'branch_from', 'eval_steps'):
+                    value['training'].pop(key, None)
+                return value
+            if scientific_config(parent) != scientific_config(cfg):
+                raise ValueError('Decay branch differs from its trunk scientific configuration')
+            record = read_json(args.branch_from / 'decay_branches.json')[f'{args.epoch_fraction:g}']
+            total = cfg['training']['max_steps']
+            boundary = total - round(total * .1)
+            if record['step'] != boundary or record['total_steps'] != total:
+                raise ValueError('Decay branch boundary does not match its requested horizon')
         # The exact source revision is also available in the Beaker experiment
         # and its immutable code dataset; retain it next to the checkpoints.
         with (output / 'source_revisions.txt').open('a') as history:
@@ -437,7 +479,7 @@ def publish_summary(args):
 
 def pool_provenance(args):
     """Require a completed, immutable sample manifest for the new smaller pools."""
-    if Decimal(args.data_size[:-2]) >= 100:
+    if Decimal(args.data_size[:-2]) > 100:
         return None
     info = read_json(raw_file(args).with_name('pool.json'))
     if info['output'] != raw_signature(raw_file(args)):

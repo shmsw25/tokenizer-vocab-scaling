@@ -98,6 +98,7 @@ def ready_nodes(state):
         return []
     return [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
+            and not node.get('hold_reason')
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
 
 
@@ -129,6 +130,8 @@ def apply_chain_snapshot(state, key, snapshot, workload_status):
     root = state['nodes'][key]
     root['chain_snapshot'] = snapshot
     root['chain_job_status'] = workload_status
+    if snapshot.get('branch_checkpoints'):
+        root['branch_checkpoints'] = snapshot['branch_checkpoints']
     for child_key, node in state['nodes'].items():
         if child_key != key and node.get('chain_parent') != key:
             continue
@@ -254,6 +257,8 @@ def placement_arguments(node):
         result += ['--cluster', *node['placement_clusters']]
     if node.get('allow_gpu_reservation'):
         result += ['--allow-gpu-reservation']
+    if node.get('wandb_secret'):
+        result += ['--wandb-secret', node['wandb_secret']]
     return result
 
 
@@ -312,6 +317,9 @@ def refresh(state, folder):
                                         node['reported_metrics'] = metrics
                                 except (ValueError, TypeError):
                                     pass  # A truncated log line is not a metric observation.
+                            for prefix, field in [('WSD_BRANCH_READY ', 'branch_checkpoints'), ('HEALTH_STOP ', 'health_stop')]:
+                                if fragment.startswith(prefix):
+                                    node[field] = json.loads(fragment[len(prefix):])
                 pool = state['nodes'].get(f"sample-{size_key(node.get('data_size') or '100GB')}", {})
                 total_records = pool.get('summary', {}).get('pool', {}).get('records')
                 node['progress'] = log_progress(lines, node['stage'], total_records)
@@ -351,6 +359,21 @@ def submit_ready(state, path):
         node = state['nodes'][key]
         if any(state['nodes'][dep].get('monitor_error') for dep in node['dependencies']):
             continue
+        if state.get('study'):
+            from adaptive_study import live_gpu_budget, reservation
+            try:
+                budget = live_gpu_budget(state)
+                state['gpu_budget'] = budget
+                state.pop('gpu_budget_error', None)
+            except Exception as error:
+                state['gpu_budget_error'] = f'{type(error).__name__}: {error}'
+                write_json(path, state)
+                return  # Fail closed: unknown allocations cannot justify a launch.
+            if budget['reserved'] + reservation(node) > budget['limit']:
+                node['admission_wait'] = 'Waiting for capacity under the 100-GPU cap (queued reservations included)'
+                write_json(path, state)
+                continue
+            node.pop('admission_wait', None)
         node.setdefault('name', f"{state['campaign']}-{key.replace('_', '-')}")
         # Persist intent before starting any network call. If interrupted,
         # refresh recovers the experiment by name before attempting submission.
@@ -463,6 +486,11 @@ def main():
         prepare_chains(state)
         if not args.offline:
             refresh(state, args.state.parent)
+        if state.get('study'):
+            from adaptive_study import advance_plan, monitor_wandb
+            if not args.offline:
+                monitor_wandb(state)
+            advance_plan(state)
         if args.migrate_pools:
             migrate_pools(state, args.vocabs, args.models, args.pool_sizes, args.training_pools)
         if args.retry_node:

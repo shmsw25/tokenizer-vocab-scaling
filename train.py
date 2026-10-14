@@ -34,7 +34,7 @@ from olmo_core.optim import AdamWConfig, WSD
 from olmo_core.train import Duration, TrainerConfig, prepare_training_environment, teardown_training_environment
 from olmo_core.train.callbacks import ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
 from olmo_core.train.train_module import TransformerDataParallelConfig, TransformerTrainModuleConfig
-from scripts.training_callbacks import ReportMetricsCallback, WSDCheckpointerCallback
+from scripts.training_callbacks import LossHealthCallback, ReportMetricsCallback, WSDCheckpointerCallback
 
 
 def load_meta(data_dir):
@@ -159,7 +159,8 @@ def main():
             callbacks={
                 'checkpointer': WSDCheckpointerCallback(
                     save_interval=t.get('save_steps', 10000), save_async=True,
-                    warmup_steps=t['warmup_steps'], decay_fraction=t['decay_fraction']),
+                    warmup_steps=t['warmup_steps'], decay_fraction=t['decay_fraction'],
+                    decay_horizons=t.get('decay_horizons', [])),
                 'config_saver': ConfigSaverCallback(),
                 'report_metrics': ReportMetricsCallback(
                     output_dir=str(output_dir),
@@ -172,6 +173,15 @@ def main():
                     eval_dataset=NumpyPaddedFSLDatasetConfig(paths=[str(paths[1])], metadata=[{'label': 'validation'}], **dataset_kwargs),
                     eval_interval=t.get('eval_steps', 10000), eval_on_finish=True),
             })
+        if t.get('health_check'):
+            trainer_cfg.callbacks['loss_health'] = LossHealthCallback(str(output_dir), t['warmup_steps'])
+        if t.get('branch_from'):
+            from olmo_core.train import LoadStrategy
+            parent = Path(t['branch_from'])
+            boundary = t['max_steps'] - round(t['max_steps'] * t['decay_fraction'])
+            trainer_cfg.load_path = str(parent / f'step{boundary}')
+            trainer_cfg.load_strategy = LoadStrategy.always
+            trainer_cfg.load_optim_state = trainer_cfg.load_trainer_state = True
         trainer = trainer_cfg.build(module, loader)
         trainer.callbacks['config_saver'].config = cfg
         if get_rank() == 0:
@@ -181,6 +191,8 @@ def main():
                   f'tokens_per_step={global_batch_size * seq_length}', flush=True)
         started = time.monotonic()
         trainer.fit()
+        if trainer.global_step < trainer.max_steps:
+            raise RuntimeError('Training stopped before its target; do not convert or evaluate as a completed trial')
         if get_rank() == 0:
             from scripts.pipeline import write_json
             write_json(output_dir / 'training_metrics.json', {

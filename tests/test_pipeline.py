@@ -160,6 +160,11 @@ def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split, size='100GB'):
     raw.parent.mkdir(parents=True, exist_ok=True)
     if not raw.exists():
         raw.write_text('{"text": "synthetic fixture"}\n')
+    if not raw.with_name('pool.json').exists():
+        heldout = tmp_path / 'heldout.json'
+        heldout.write_text('{}')
+        pipeline.write_json(raw.with_name('pool.json'), {'output': pipeline.raw_signature(raw),
+            'heldout_file': str(heldout), 'heldout_sha256': pipeline.digest(heldout)})
     directory = pipeline.tokenized_dir(args)
     directory.mkdir(parents=True)
     (directory / 'tokenizer.json').write_text('{}')
@@ -229,6 +234,8 @@ def test_uniform_sample_and_cpu_tokenizers(tmp_path):
     assert len({x['id'] for x in selected}) == 400
     assert [x['id'] for x in selected] == sorted(x['id'] for x in selected)
     assert all(row == records[row['id']] for row in selected)
+    from sample_pool import sample_pool
+    sample_pool(tmp_path, '100GB', heldout_count=10)
     splits = []
     for vocab in (300, 512):
         args = args_for('train-tokenizer', '--root', str(tmp_path), '--vocab-size', str(vocab))
@@ -237,13 +244,14 @@ def test_uniform_sample_and_cpu_tokenizers(tmp_path):
         pipeline.tokenize_data(args)
         pipeline.tokenize_data(args)
         meta = pipeline.completed_meta(pipeline.tokenized_dir(args), vocab)
-        assert meta['train']['documents'] + meta['eval']['documents'] == 400
+        assert meta['train']['documents'] + meta['eval']['documents'] == 390
         splits.append((meta['train']['documents'], meta['eval']['documents'],
                        meta['train']['bytes'], meta['eval']['bytes']))
     assert splits[0] == splits[1]
     # A modified source must not silently reuse tokenized outputs.
+    sample = pipeline.raw_file(args)
     sample.write_text(sample.read_text() + '{"text":"changed"}\n')
-    with pytest.raises(ValueError, match='different source'):
+    with pytest.raises(ValueError, match='Pool contents'):
         pipeline.tokenize_data(args)
 
 

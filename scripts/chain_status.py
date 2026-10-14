@@ -13,7 +13,11 @@ def snapshot(stage, results=Path('/results')):
         path = results / f'{name}.json'
         if path.is_file():
             summaries[name] = json.loads(path.read_text())
-    return {'current_stage': stage, 'summaries': summaries}
+    result = {'current_stage': stage, 'summaries': summaries}
+    branches = results / 'decay_branches.json'
+    if branches.is_file():
+        result['branch_checkpoints'] = json.loads(branches.read_text())
+    return result
 
 
 if __name__ == '__main__':

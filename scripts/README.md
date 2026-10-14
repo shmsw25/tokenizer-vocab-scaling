@@ -1,6 +1,8 @@
 # Jupiter / Weka / Beaker pipeline
 
-These scripts submit **one stage per Beaker experiment** in `ai2/flex2`.
+These scripts submit jobs in `ai2/flex2`. Model workflows run training,
+CPU conversion, and single-GPU evaluation sequentially in **one shell script
+and one Beaker allocation** (`run_model.sh`).
 Download/sample jobs (including each smaller pool) can run on **any accessible cluster with Weka access**;
 other CPU stages default to `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
 The active campaign now places unstarted CPU stages on `ai2/saturn` or `ai2/neptune`
@@ -11,6 +13,48 @@ clusters; the campaign records this reservation, while CUDA remains disabled.
 Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
 wait for each prerequisite experiment to **succeed** before submitting its next
 stage. No experiment is submitted by setup or by `--dry-run`.
+
+## Adaptive study
+
+The active campaign's `study` record extends the existing receipts in place.
+Run `.venv/bin/python scripts/campaign.py --advance` every 30 minutes; never
+reinitialize it. `adaptive_study.py` manages nine independent 5GB LR brackets:
+baseline, half the LR, then another halving if validation BPB improves or twice
+the baseline otherwise. The lowest final validation BPB selects the LR for
+that model/vocabulary pair, which transfers unchanged to 10GB, 20GB, and 100GB.
+Completed matching runs are reused, and old pending recipes remain in state
+as superseded plans. Existing running allocations are preserved.
+
+Every new study job requests `minRuntime: 3h`. Admission counts all the owner's
+live and queued Beaker jobs, including retained eight-GPU allocations during
+conversion/evaluation. CPU requests still specify GPU 0; admission conservatively
+budgets up to eight scheduler-reserved GPUs on Weka GPU clusters. Unknown
+allocation state blocks new submissions. Other applications submitting jobs
+concurrently are outside this controller; each admission rechecks live usage.
+
+New training logs to W&B using the existing `SEWONM_WANDB_API_KEY` Beaker secret.
+The monitor queries W&B summaries and retains Beaker loss logs. An in-job guard
+stops on non-finite CE or 20 consecutive rolling-median windows above 1.5 times
+the best post-warmup median (20 observations per window; enabled after warmup
+plus 100 steps). A stopped trial is not converted or counted as completed.
+
+After selected-LR 10GB/20GB evaluations, the 100GB parent is copied once to
+`raw_text/100GB/training/`, excluding the same 1,000 shared held-out records.
+The immutable parent remains available. Train/tokenize 32K/64K/128K on that
+eligible corpus. Each 100GB main run saves permanent full-state checkpoints at
+`floor(epoch_steps * fraction) - round(floor(epoch_steps * fraction) * 0.1)`
+for fractions 0.05, 0.1, 0.2, and 0.4. Independent branches restore each checkpoint
+and decay to its horizon; the main run retains full LR until its own final 10%
+decay. Each branch also chains conversion/evaluation, preserving its checkpoint.
+The scheduler uses the branch's absolute horizon without repeating warmup.
+
+After these finish, the conditional 8K/16K extension is triggered if tuned 32K
+held-out BPB beats both larger vocabularies by at least 0.001 in at least five
+of nine 5GB/10GB/20GB coordinates, including at least two models on 5GB. This
+is a descriptive trigger, not a significance test. The extension trains new
+tokenizers, tunes LR on 5GB, transfers it, and repeats the 100GB horizons.
+The report records the decision, LR selection, all variants, and Brian's
+supplied screenshot as a reference with different settings and token counts.
 
 ## Local setup
 

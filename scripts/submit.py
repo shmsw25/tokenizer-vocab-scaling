@@ -69,9 +69,9 @@ def parser():
         if stage in ('train-model', 'convert-model'):
             s.add_argument('--chain-evaluation', action='store_true',
                            help='Run conversion and evaluation in the same shell/job after success')
-        if stage == 'train-model':
-            s.add_argument('--min-runtime', type=minimum_runtime,
-                           help='Minimum runtime: defaults to 8h for 32K vocabulary, 0s otherwise')
+        s.add_argument('--min-runtime', type=minimum_runtime,
+                       help='Explicit minimum allocation runtime, e.g. 3h')
+        s.add_argument('--wandb-secret', help='Beaker secret name for WANDB_API_KEY; never a literal key')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')
         s.add_argument('--image', default=GPU_IMAGE if stage in MODEL_STAGES else CPU_IMAGE,
                        help='Beaker image ID for training; Docker image for CPU stages')
@@ -95,12 +95,17 @@ def stage_arguments(args):
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
     if args.stage in MODEL_STAGES:
         for name in ('model_size', 'gpus', 'micro_batch_size', 'batch_size',
-                     'learning_rate', 'weight_decay', 'epochs', 'seed', 'max_steps'):
+                     'learning_rate', 'weight_decay', 'epochs', 'seed', 'max_steps',
+                     'epoch_fraction', 'branch_from', 'wandb_project', 'eval_interval'):
             value = getattr(args, name)
             if value is not None:
                 result += ['--' + name.replace('_', '-'), str(value)]
         if args.no_compile:
             result.append('--no-compile')
+        if args.health_check:
+            result.append('--health-check')
+        if args.decay_horizons:
+            result += ['--decay-horizons', *map(str, args.decay_horizons)]
     if args.stage == 'evaluate-model':
         result += ['--evals', *args.evals]
     return result
@@ -145,12 +150,16 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
     env_vars = [{'name': k, 'value': v} for k, v in env.items()]
     if args.hf_token_secret:
         env_vars.append({'name': 'HF_TOKEN', 'secret': args.hf_token_secret})
+    if args.wandb_secret:
+        env_vars.append({'name': 'WANDB_API_KEY', 'secret': args.wandb_secret})
     context = {'priority': args.priority, 'preemptible': args.preemptible}
     if args.stage == 'train-model':
         # Use the current scheduling field, not the deprecated preemptible flag.
         context = {'priority': args.priority,
                    'minRuntime': args.min_runtime if args.min_runtime is not None else
                    '8h' if args.vocab_size == 32000 else '0s'}
+    elif args.min_runtime is not None:
+        context = {'priority': args.priority, 'minRuntime': args.min_runtime}
     return {
         'version': 'v2',
         'description': f'Tokenizer project: {args.stage}; source {revision}',

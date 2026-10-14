@@ -106,3 +106,51 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
     finished, _ = build()
     finished.fit()
     assert json.loads(record_path.read_text()) == record
+
+
+def test_intermediate_decay_branch_restores_full_state_and_leaves_trunk_intact(tmp_path):
+    from olmo_core.data import NumpyDataLoaderConfig, NumpyFSLDatasetConfig, TokenizerConfig
+    from olmo_core.nn.attention import AttentionBackendName
+    from olmo_core.nn.transformer import TransformerConfig
+    from olmo_core.optim import AdamWConfig, WSD
+    from olmo_core.train import Duration, LoadStrategy, TrainerConfig
+    from olmo_core.train.callbacks import ConfigSaverCallback
+    from olmo_core.train.train_module import TransformerTrainModuleConfig
+
+    tokens = tmp_path / 'tokens.npy'
+    np.arange(1024, dtype=np.uint32).__mod__(127).tofile(tokens)
+    def build(output, steps, source=None, horizons=()):
+        torch.manual_seed(42)
+        model = TransformerConfig.llama_like(d_model=16,n_layers=1,n_heads=2,vocab_size=128,
+            tie_word_embeddings=True,attn_backend=AttentionBackendName.torch).build(init_device='cpu')
+        module = TransformerTrainModuleConfig(rank_microbatch_size=16,max_sequence_length=8,
+            optim=AdamWConfig(lr=.001,weight_decay=.1,fused=False),
+            scheduler=WSD(warmup=2,decay_fraction=.1,decay_min_lr=0),compile_model=False).build(model,device=torch.device('cpu'))
+        dataset = NumpyFSLDatasetConfig(paths=[str(tokens)],sequence_length=8,dtype='uint32',
+            work_dir=str(tmp_path/'data'),tokenizer=TokenizerConfig(vocab_size=128,eos_token_id=127,pad_token_id=127)).build()
+        loader = NumpyDataLoaderConfig(global_batch_size=16,seed=42,num_workers=0).build(dataset)
+        callback = WSDCheckpointerCallback(warmup_steps=2,decay_fraction=.1,save_interval=1000,
+            pre_train_checkpoint=False,save_async=False,decay_horizons=list(horizons))
+        config = TrainerConfig(save_folder=str(output),work_dir=str(tmp_path/'work'),device='cpu',
+            max_duration=Duration.steps(steps),metrics_collect_interval=1,
+            load_path=str(source) if source else None,load_strategy=LoadStrategy.always if source else LoadStrategy.if_available,
+            load_optim_state=True,load_trainer_state=True,
+            callbacks={'checkpointer':callback,'config_saver':ConfigSaverCallback()})
+        trainer=config.build(module,loader);trainer.callbacks['config_saver'].config={'test':True}
+        return trainer
+    trunk = build(tmp_path/'trunk',20,horizons=[.5]);trunk.fit()
+    record=json.loads((tmp_path/'trunk/decay_branches.json').read_text())['0.5']
+    assert record['step']==9 and record['total_steps']==10
+    checkpoint=Path(record['path'])
+    assert (checkpoint/'model_and_optim/.metadata').is_file()
+    state=torch.load(checkpoint/'train/rank0.pt',weights_only=False)
+    assert state['global_step']==9 and state['data_loader']['batches_processed']==9 and state['rng']
+    parent_bytes=(checkpoint/'train/rank0.pt').read_bytes()
+    branch=build(tmp_path/'branch',10,source=checkpoint);branch.fit()
+    assert branch.global_step==10 and branch.data_loader.batches_processed==10
+    assert branch.train_module.optim.state
+    assert branch.train_module.optim.param_groups[0]['lr']==pytest.approx(0.)
+    saved=json.loads((tmp_path/'branch/pre_decay_checkpoint.json').read_text())
+    assert saved['step']==9 and Path(saved['path']).parent==tmp_path/'branch'
+    assert (checkpoint/'train/rank0.pt').read_bytes()==parent_bytes
+    assert trunk.global_step==20

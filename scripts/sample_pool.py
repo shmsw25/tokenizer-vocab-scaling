@@ -23,13 +23,15 @@ def pool_seed(size, base_seed):
 def sample_pool(root, size, base_seed=42, *, heldout_count=HELDOUT_DOCUMENTS):
     root = Path(root)
     fraction = Decimal(size[:-2]) / 100
-    if not 0 < fraction < 1:
-        raise ValueError('Pool size must be between 0 and 100GB')
+    if not 0 < fraction <= 1:
+        raise ValueError('Pool size must be greater than 0 and at most 100GB')
     source = root / 'raw_text/100GB/dolma3_100gb.jsonl'
     signature = raw_signature(source)
     if read_json(root / 'raw_text/provenance.json')['sample'] != signature:
         raise ValueError('The parent 100GB download/sample must finish before subsampling')
     target = root / 'raw_text' / size / f'dolma3_{size.lower()}.jsonl'
+    if fraction == 1:
+        target = root / 'raw_text/100GB/training/dolma3_100gb.jsonl'
     marker = target.with_name('pool.json')
     partial = target.with_name(target.name + '.part')
     heldout_file = root / 'raw_text/heldout' / f'dolma3_100gb_shared_{heldout_count}.json'

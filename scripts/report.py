@@ -77,7 +77,10 @@ def compute_budget(node, cfg, meta, baseline):
     if node.get('summary', {}).get('config') and seq != cfg['seq_length']:
         raise ValueError('Saved training context differs from measured context')
     tokens_per_step = seq * batch
-    epoch_tokens = meta['train']['tokens'] // tokens_per_step * tokens_per_step
+    epoch_steps = meta['train']['tokens'] // tokens_per_step
+    fraction = float(argument(node, '--epoch-fraction', 1))
+    steps = int(argument(node, '--max-steps', math.floor(epoch_steps * fraction)))
+    epoch_tokens = steps * tokens_per_step
     estimate = model_compute(json.dumps(cfg['model'], sort_keys=True), node['vocab_size'], seq)
     result.update(estimate, seq_length=seq, epoch_tokens=epoch_tokens,
                   epoch_flops=epoch_tokens * estimate['flops_per_token'],
@@ -103,6 +106,8 @@ def build_report_data(state):
     for key, node in nodes.items():
         if node['stage'] != 'train-model':
             continue
+        if node.get('study_role') == 'superseded_plan':
+            continue
         pool, vocab, model = node.get('data_size', '100GB'), node['vocab_size'], node['model_size']
         conversion = next((n for n in nodes.values() if n['stage'] == 'convert-model' and key in n['dependencies']), {})
         conversion_key = next((k for k, n in nodes.items() if n is conversion), None)
@@ -121,6 +126,9 @@ def build_report_data(state):
                      'conversion_status': display_status(conversion.get('status', 'pending')),
                      'lr': cfg['training']['learning_rate'], 'wd': cfg['training']['weight_decay'],
                      'batch_size': budget['global_batch_size'],
+                     'epoch_fraction': float(argument(node, '--epoch-fraction', 1)),
+                     'study_role': node.get('study_role'),
+                     'wandb_url': node.get('reported_metrics', {}).get('wandb_url'),
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
                      'microbatch': cfg['training']['micro_batch_size'],
                      'weight_tying': cfg['model'].get('tie_word_embeddings', False),
@@ -132,10 +140,13 @@ def build_report_data(state):
                      'eval_url': evaluation.get('receipt', {}).get('url')})
     groups = defaultdict(list)
     for run in runs:
-        groups[(run['pool'], run['vocab'], run['model'])].append(run)
+        groups[(run['pool'], run['vocab'], run['model'], run['epoch_fraction'])].append(run)
     selected = []
     for group in groups.values():
         eligible = [r for r in group if r['status'] == 'completed' and r['metrics']['validation_bpb'] is not None]
+        chosen_lr = state.get('study', {}).get('selected', {}).get(f"{group[0]['model']}:{group[0]['vocab']}", {}).get('lr')
+        if chosen_lr is not None:
+            eligible = [r for r in eligible if r['lr'] == chosen_lr]
         choice = min(eligible, key=lambda r: (r['metrics']['validation_bpb'], r['id'])) if eligible else group[0] if len(group) == 1 else None
         if choice:
             selected.append(choice['id'])
@@ -157,14 +168,15 @@ def build_report_data(state):
             'complete': state['complete']}
 
 
-def build_figures(data):
+def build_figures(data, horizon=1.):
     import plotly.graph_objects as go
     figures = {}
     for metric, (label, percentage) in METRICS.items():
         figures[metric] = []
         for pool in data['pools']:
             fig = go.Figure()
-            pool_runs = [r for r in data['runs'] if r['pool'] == pool and r['id'] in data['selected']]
+            pool_runs = [r for r in data['runs'] if r['pool'] == pool and r['id'] in data['selected']
+                         and r['epoch_fraction'] == (horizon if pool == '100GB' else 1.)]
             plotted = 0
             for vocab in sorted({r['vocab'] for r in pool_runs}):
                 records = sorted([r for r in pool_runs if r['vocab'] == vocab and r['status'] == 'completed'
@@ -205,10 +217,18 @@ def render_report(state, destination):
     from plotly.offline import get_plotlyjs
     from plotly.utils import PlotlyJSONEncoder
     evaluations = [n for n in state['nodes'].values() if n['stage'] == 'evaluate-model']
-    state['complete'] = bool(evaluations) and all(n['status'] == 'succeeded' for n in state['nodes'].values()) and all(
-        set(EVALS) <= set(n.get('summary', {}).get('metrics', {})) for n in evaluations)
+    if study := state.get('study'):
+        state['complete'] = study['phase'] == 'complete' and all(
+            state['nodes'][k]['status'] == 'succeeded' and set(EVALS) <= set(state['nodes'][k].get('summary', {}).get('metrics', {}))
+            for k in study['required'])
+    else:
+        state['complete'] = bool(evaluations) and all(n['status'] == 'succeeded' for n in state['nodes'].values()) and all(
+            set(EVALS) <= set(n.get('summary', {}).get('metrics', {})) for n in evaluations)
     data = build_report_data(state)
     data['figures'] = build_figures(data)
+    if state.get('study'):
+        data['horizon_figures'] = {f'{h:g}': build_figures(data, h) for h in (.05, .1, .2, .4, 1.)}
+        data['study'] = state['study']
     data['campaign'] = state
     payload = json.dumps(data, cls=PlotlyJSONEncoder, sort_keys=True).replace('<', '\\u003c')
     source = (REPO / 'scripts' / 'report_template.html').read_text()
