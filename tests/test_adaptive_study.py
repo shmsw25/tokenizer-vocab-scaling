@@ -84,6 +84,46 @@ def test_admission_counts_retained_allocations_and_fails_closed(tmp_path,monkeyp
     assert s['gpu_budget_error']
 
 
+def test_gpu_inventory_reads_queued_min_runtime_and_counts_all_replicas(monkeypatch):
+    from beaker import Beaker
+    from google.protobuf import json_format
+    from unittest.mock import MagicMock
+    b = MagicMock()
+    monkeypatch.setattr(Beaker, 'from_env', lambda **kwargs: b)
+    b.__enter__.return_value = b
+    queued = SimpleNamespace(experiment=SimpleNamespace(id='external-queued', tasks=[]),
+                             environment=SimpleNamespace(id=''))
+    live = SimpleNamespace(experiment=SimpleNamespace(id='chain-running', tasks=['train']),
+                           environment=SimpleNamespace(id=''))
+    b.workload.list.return_value = [queued, live]
+    b.workload.get.side_effect = lambda identifier: queued if identifier == 'external-queued' else live
+    b.job.list.return_value = [SimpleNamespace(id='live-job')]
+    b.experiment.rpc_request.return_value.experiment_spec = '''tasks:
+  - context: {minRuntime: 3h0m0s, priority: urgent}
+    resources: {gpuCount: 8}
+    replicas: 2
+  - context: {minRuntime: 3h0m0s}
+    resources: {gpuCount: 0}
+'''
+    monkeypatch.setattr(json_format, 'MessageToDict', lambda job: {
+        'containerSpec': {'resourceRequest': {'gpuCount': 8}},
+        'assignmentDetails': {'resourceAssignment': {'gpus': list(range(8))}},
+    })
+    s = {'workspace': 'ai2/test', 'owner': 'sewonm', 'study': {'gpu_scope': 'all_user', 'gpu_limit': 100},
+         'nodes': {'train': {'receipt': {'workload_id': 'chain-running'}, 'status': 'succeeded',
+                             'chain_job_status': 'running', 'expected_gpus': 8},
+                   'eval': {'receipt': {'workload_id': 'chain-running'}, 'status': 'running',
+                            'chain_parent': 'train', 'expected_gpus': 1}}}
+    budget = study.live_gpu_budget(s)
+    assert budget['reserved'] == 32  # Two queued replicas, CPU reservation, retained chain allocation.
+    assert budget['assigned'] == 8
+    assert len(budget['entries']) == 2
+    b.experiment.get_spec.assert_not_called()
+    b.experiment.rpc_request.side_effect = RuntimeError('inventory unavailable')
+    with pytest.raises(RuntimeError, match='inventory unavailable'):
+        study.live_gpu_budget(s)
+
+
 def test_loss_health_guard_waits_for_sustained_deterioration(tmp_path):
     from scripts.training_callbacks import LossHealthCallback
     calls=[];cb=LossHealthCallback(str(tmp_path),warmup_steps=10)

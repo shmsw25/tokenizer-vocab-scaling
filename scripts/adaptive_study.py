@@ -326,8 +326,10 @@ def reservation(node):
 
 
 def live_gpu_budget(state):
-    from beaker import Beaker
+    from beaker import Beaker, beaker_pb2 as pb
+    from beaker._service_client import RpcMethod
     from google.protobuf.json_format import MessageToDict
+    import yaml
     with Beaker.from_env(default_workspace=state['workspace'], check_for_upgrades=False) as b:
         author = b.user.get(state['owner'])
         own = {n['receipt']['workload_id'] for n in state['nodes'].values() if n.get('receipt')}
@@ -341,7 +343,16 @@ def live_gpu_budget(state):
             jobs = ([job for task in full.experiment.tasks for job in b.job.list(task=task, finalized=False)]
                     if full.experiment.id else list(b.job.list(environment=full.environment, finalized=False)))
             if not jobs and full.experiment.id:
-                spec = b.experiment.get_spec(full).to_json()
+                # Read the server spec directly: beaker-py 2.5 cannot decode
+                # context.minRuntime, which our queued jobs explicitly set.
+                # A failed read still propagates to the fail-closed admission check.
+                raw = b.experiment.rpc_request(
+                    RpcMethod[pb.GetExperimentYamlSpecResponse](b.experiment.service.GetExperimentYamlSpec),
+                    pb.GetExperimentYamlSpecRequest(experiment_id=full.experiment.id),
+                ).experiment_spec
+                spec = yaml.safe_load(raw)
+                if not isinstance(spec, dict) or not spec.get('tasks'):
+                    raise ValueError(f'Missing tasks in queued workload spec: {identifier}')
                 reserve = sum(max(8, int(t.get('resources', {}).get('gpuCount', 0))) * int(t.get('replicas', 1))
                               for t in spec['tasks'])
                 entries.append({'job': None, 'workload': identifier, 'requested': reserve,
