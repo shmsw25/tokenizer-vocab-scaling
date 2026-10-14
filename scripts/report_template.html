@@ -37,18 +37,13 @@ label{font-size:12px;color:var(--muted)}.filters{display:flex;flex-wrap:wrap;ali
 <p class="note footnote">Each vocabulary line connects model sizes. FLOPs use measured training tokens, the scaled context, and EMO’s idealized forward + backward FLOPs/token. Incomplete final batches are excluded. Points appear only for completed training runs with the selected metric.</p>
 <p class="note">When a coordinate has multiple runs, its completed run with the lowest validation BPB is used consistently across metrics. A single run needs no selection; missing values remain blank.</p>
 </section>
-<section class="support"><details><summary>Data, FLOPs method, and provenance</summary><div class="details-body">
-<p class="note">Pool labels approximate UTF-8 text size. The table below uses exact measured record and byte counts.</p>
-<div class="table-wrap"><table><thead><tr><th>Pool</th><th>Actual text GB</th><th>Records</th></tr></thead><tbody id="pool-details"></tbody></table></div>
-<h3 style="margin-top:20px">Total training tokens</h3>
-<p class="note">Exact token counts in the training split, excluding validation. Each cell describes one tokenized stream shared by all three model sizes; counts are before dropping the incomplete final batch. Only the 5GB, 10GB, and 20GB pools are tokenized for model training.</p>
+<section id="training-tokens">
+<h2>Total training tokens</h2>
+<p class="note">Training split only, before dropping the incomplete final batch. Parentheses show the percentage change relative to 32K for the same pool; negative values mean fewer tokens.</p>
 <div class="table-wrap"><table><thead id="training-token-head"></thead><tbody id="training-token-rows"></tbody></table></div>
-<p class="note">One-epoch tokens = floor(train tokens / (context × global batch)) × context × global batch. Context = round(4096 × target tokens/byte ÷ the same pool’s 32K tokens/byte). Both tokenization streams must finish before FLOPs are calculated. Model FLOPs/token comes directly from the pinned EMO model, including attention and the vocabulary-dependent output projection; it excludes recomputation and hardware overhead.</p>
-<p class="note">Training and validation BPB are token-averaged CE × that split’s measured tokens/byte ÷ ln(2). These are split-normalized loss estimates, separate from the shared held-out Dolma BPB evaluation. Their observation steps and all run hyperparameters are retained in the downloadable report data.</p>
-<button id="download">Download report data</button><details><summary>Job status and ETA</summary><div class="table-wrap"><table><thead><tr><th>Job</th><th>State</th><th>GPUs requested / assigned</th><th>Progress</th><th>ETA</th></tr></thead><tbody id="job-rows"></tbody></table></div></details>
-</div></details></section>
+</section>
 <section id="run-grid">
-<div class="section-head"><h2>Run coordinate grid</h2><span class="note" id="run-total"></span></div>
+<div class="section-head"><h2>Run coordinate grid</h2><span class="note" id="run-total"></span><button id="download">Download report data</button></div>
 <p class="note">One row per pool, vocabulary, and model. Each run shows its LR, WD, training state, and five evaluation metrics. Green borders mark the validation-selected completed run.</p>
 <p class="note">Held-out Dolma BPB uses the same 1,000 documents for every model. BLiMP, ARC-E, HS (HellaSwag), and PIQA are accuracies under the repository’s byte-normalized scoring.</p>
 <div class="filters"><label>Pool <select id="pool-filter"><option value="">All</option></select></label><label>Vocabulary <select id="vocab-filter"><option value="">All</option></select></label><label>Model <select id="model-filter"><option value="">All</option></select></label><label>Training state <select id="status-filter"><option value="">All</option><option>planned</option><option>queued</option><option>running</option><option>completed</option><option>failed</option><option>canceled</option></select></label><span class="note" id="filter-count"></span></div>
@@ -78,11 +73,9 @@ $('metric').value='dolma_bpb';
 $('charts').innerHTML=data.pools.map((p,i)=>`<article class="chart"><h3>${esc(p)}</h3><div class="plot" id="plot-${i}" aria-label="${esc(p)} training FLOPs plot"></div></article>`).join('');
 function plot(){data.figures[$('metric').value].forEach((fig,i)=>Plotly.react(`plot-${i}`,fig.data,fig.layout,{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d'],toImageButtonOptions:{format:'svg',filename:`tokenizer-${data.pools[i]}-${$('metric').value}`}}));}
 $('metric').addEventListener('change',plot);plot();
-$('pool-details').innerHTML=data.pool_details.filter(p=>p.data_size).sort((a,b)=>parseFloat(a.data_size)-parseFloat(b.data_size)).map(p=>`<tr><td>${esc(p.data_size)}</td><td>${num(p.actual_text_gb,6)}</td><td>${integer(p.records)}</td></tr>`).join('');
 $('training-token-head').innerHTML=`<tr><th>Pool</th>${data.token_vocab_labels.map(v=>`<th>${esc(v)}</th>`).join('')}</tr>`;
-$('training-token-rows').innerHTML=data.training_tokens.map(row=>`<tr><td>${esc(row.pool)}</td>${data.token_vocab_labels.map(v=>`<td>${integer(row.tokens[v])}</td>`).join('')}</tr>`).join('');
-const statusMap={pending:'planned',submitted:'queued',initializing:'running',succeeded:'completed'};
-$('job-rows').innerHTML=Object.entries(data.campaign.nodes).map(([key,n])=>`<tr><td>${link(n.receipt?.url,key)}</td><td>${badge(statusMap[n.status]||n.status)}</td><td>${n.expected_gpus} / ${n.assigned_gpus??'—'}</td><td>${esc(n.monitor_error||n.submission_error||n.progress?.text||'')}${n.resource_warning?' '+esc(n.resource_warning):''}</td><td>${esc(n.status==='succeeded'?'Complete':n.progress?.eta||'Awaiting prerequisites')}</td></tr>`).join('');
+const percentChange=x=>x==null?'—':`${x<0?'−':x>0?'+':''}${Math.abs(x).toFixed(2)}%`;
+$('training-token-rows').innerHTML=data.training_tokens.map(row=>`<tr><td>${esc(row.pool)}</td>${data.token_vocab_labels.map(v=>`<td>${integer(row.tokens[v])} <span class="muted">(${percentChange(row.change_vs_32k_pct[v])})</span></td>`).join('')}</tr>`).join('');
 $('download').addEventListener('click',()=>{const {figures,...payload}=data;const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='tokenizer-study-results.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 for(const [id,values] of [['pool-filter',data.pools],['vocab-filter',[...new Set(data.runs.map(r=>r.vocab_label))]],['model-filter',[...new Set(data.runs.map(r=>r.model))]]]){$(id).insertAdjacentHTML('beforeend',values.map(v=>`<option>${esc(v)}</option>`).join(''));}
 function coordinate(r){const m=r.metrics;const marked=selected.has(r.id)&&r.status==='completed'&&m.validation_bpb!=null;

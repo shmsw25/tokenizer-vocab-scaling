@@ -143,6 +143,11 @@ def build_report_data(state):
     training_tokens = [{'pool': pool, 'tokens': {
         vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')
         for vocab in vocabs}} for pool in pools]
+    for row in training_tokens:
+        baseline = row['tokens'].get('32K')
+        row['change_vs_32k_pct'] = {
+            label: 100 * (tokens / baseline - 1) if tokens is not None and baseline else None
+            for label, tokens in row['tokens'].items()}
     return {'tokenizers': counts, 'runs': runs, 'selected': selected, 'pools': pools,
             'training_tokens': training_tokens, 'token_vocab_labels': [vocab_label(v) for v in vocabs],
             'metric_labels': {k: v[0] for k, v in METRICS.items()},
