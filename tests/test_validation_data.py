@@ -3,12 +3,13 @@ import json
 from pathlib import Path
 import random
 import sys
+from types import SimpleNamespace
 
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from pipeline import read_json, write_json, raw_signature, digest
+from pipeline import read_json, write_json, raw_signature, digest, tokenized_dir
 from validation_data import prepare_corpus, tokenize_validation, validation_root
 
 
@@ -25,7 +26,8 @@ def fixture(root):
     write_json(root/'raw_text/heldout/dolma3_100gb_shared_1000.json',dict(source_records=400,source_sha256=digest(parent)))
     tok=Tokenizer(models.WordLevel({'<|endoftext|>':0,'[UNK]':1},unk_token='[UNK]'))
     tok.pre_tokenizer=pre_tokenizers.Whitespace()
-    ref=root/'tokenized/default_5GB_32000/tokenizer.json';ref.parent.mkdir(parents=True);tok.save(str(ref))
+    ref=tokenized_dir(SimpleNamespace(root=root,data_size='5GB',vocab_size=32000))/'tokenizer.json'
+    ref.parent.mkdir(parents=True);tok.save(str(ref))
     write_json(ref.with_name('meta.json'),dict(train=dict(tokens=4000,documents=400)))
     path=root/'tokenizers/default_5GB_2/tokenizer.json';path.parent.mkdir(parents=True);tok.save(str(path))
     return full,parent,rows,parent_rows
@@ -49,6 +51,15 @@ def test_shared_validation_is_disjoint_deterministic_and_whole_documents(tmp_pat
     second=tmp_path/'independent';fixture(second)
     other=prepare_corpus(second,target_tokens=100,seed=13,candidate_count=600)
     assert info['sha256']==other['sha256']
+
+
+def test_validation_uses_completed_pipeline_token_stream_layout(tmp_path):
+    fixture(tmp_path)
+    assert (tmp_path/'tokenized_data/default_5GB_32000/meta.json').is_file()
+    assert not (tmp_path/'tokenized').exists()
+    info=prepare_corpus(tmp_path,target_tokens=100)
+    assert info['recipe']['reference_tokenizer']==str(tmp_path/'tokenized_data/default_5GB_32000/tokenizer.json')
+    assert info['reference_tokens']>=100
 
 
 def test_validation_rejects_mutation_and_preserves_partial(tmp_path):

@@ -8,8 +8,9 @@ import json
 import math
 from pathlib import Path
 import random
+from types import SimpleNamespace
 
-from pipeline import digest, lock, raw_signature, read_json, write_json
+from pipeline import digest, lock, raw_signature, read_json, tokenized_dir, write_json
 
 VERSION = 'dolma100m-v1'
 TARGET_TOKENS = 100_000_000
@@ -31,7 +32,7 @@ def prepare_corpus(root, *, target_tokens=TARGET_TOKENS, seed=SEED, candidate_co
     marker, target = folder / 'manifest.json', folder / 'documents.jsonl'
     provenance = read_json(root / 'raw_text/provenance.json')
     full = Path(provenance['full']['path']); parent = Path(provenance['sample']['path'])
-    reference = root / 'tokenized/default_5GB_32000/tokenizer.json'
+    reference = tokenized_dir(SimpleNamespace(root=root, data_size='5GB', vocab_size=32000)) / 'tokenizer.json'
     reference_meta = read_json(reference.with_name('meta.json'))
     if raw_signature(full) != provenance['full'] or raw_signature(parent) != provenance['sample']:
         raise ValueError('Downloaded corpus no longer matches provenance')
