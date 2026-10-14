@@ -230,6 +230,31 @@ def test_unhealthy_trial_does_not_block_selection_or_required_evaluations():
     assert study.eval_key(lower) not in s['study']['required']
 
 
+def test_native_nan_failure_is_unhealthy_without_callback_marker():
+    node = {'stage': 'train-model', 'status': 'failed', 'receipt': {'workload_id': 'current'},
+            'job_id': 'job', 'arguments': []}
+    lines = [{'timestamp': '2026-10-14T14:50:41Z',
+              'message': 'RuntimeError: nan loss encountered at step 485'}]
+    campaign.record_native_loss_failure(node, lines)
+    assert node['health_stop']['step'] == 485
+    assert node['health_stop']['workload_id'] == 'current'
+    assert study.completed_score(node) == float('inf')
+    with pytest.raises(ValueError, match='explicitly authorized checkpoint resume'):
+        campaign.retry_node({'nodes': {'trial': node}}, 'trial')
+
+
+@pytest.mark.parametrize('stage,status,message', [
+    ('train-model', 'running', 'RuntimeError: nan loss encountered at step 485'),
+    ('train-model', 'succeeded', 'RuntimeError: nan loss encountered at step 485'),
+    ('evaluate-model', 'failed', 'RuntimeError: nan loss encountered at step 485'),
+    ('train-model', 'failed', 'RuntimeError: CUDA out of memory'),
+])
+def test_native_nan_classification_does_not_swallow_other_failures(stage, status, message):
+    node = {'stage': stage, 'status': status, 'receipt': {'workload_id': 'current'}}
+    campaign.record_native_loss_failure(node, [{'timestamp': 'now', 'message': message}])
+    assert 'health_stop' not in node
+
+
 def test_horizons_release_only_after_checkpoint_and_complete_only_after_all_evals():
     s=fixture();study.advance_plan(s)
     for b in s['study']['brackets'].values():finish(s,b['lower'],.9)

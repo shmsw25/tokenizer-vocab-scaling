@@ -306,6 +306,26 @@ def placement_arguments(node):
     return result
 
 
+def record_native_loss_failure(node, lines):
+    """Recognize EMO's own NaN guard when it raises before HEALTH_STOP is emitted."""
+    if node['stage'] != 'train-model' or node['status'] != 'failed' or node.get('health_stop'):
+        return
+    for line in lines:
+        for fragment in line['message'].splitlines():
+            match = re.fullmatch(r'RuntimeError: nan loss encountered at step (\d+)',
+                                 ANSI.sub('', fragment).strip())
+            if match:
+                node['health_stop'] = {
+                    'reason': 'Non-finite training loss (EMO native NaN guard)',
+                    'step': int(match[1]), 'source': 'emo_trainer',
+                    'observed_at': line['timestamp'],
+                    'workload_id': node['receipt']['workload_id'],
+                    'job_id': node.get('job_id'),
+                    'evidence': ANSI.sub('', fragment).strip(),
+                }
+                return
+
+
 def refresh(state, folder):
     from beaker import Beaker, BeakerWorkloadStatus
     from beaker.exceptions import BeakerWorkloadNotFound
@@ -397,6 +417,7 @@ def refresh(state, folder):
                     with urllib.request.urlopen(url, timeout=60) as response:
                         node['summary'] = json.loads(response.read(10_000_000))
                     write_json(folder / 'summaries' / f'{key}.json', node['summary'])
+                record_native_loss_failure(node, lines)
                 node.pop('monitor_error', None)
             except Exception as error:
                 node['monitor_error'] = f'{type(error).__name__}: {error}'
