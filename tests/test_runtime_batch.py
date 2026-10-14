@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import pipeline
+import campaign
 import runtime_batch
 import submit
 from test_pipeline import make_meta_fixture
@@ -86,3 +87,17 @@ def test_training_spec_uses_eight_gpus_on_any_supported_cluster():
     assert task['resources']['gpuCount'] == 8
     assert task['context']['minRuntime'] == '3h'
     assert {'name': 'TOKENIZER_CHAIN_EVALUATION', 'value': '1'} in task['envVars']
+
+
+def test_later_explicit_retry_uses_new_placement_and_archives_runtime_evidence():
+    node = {'stage': 'train-model', 'status': 'failed', 'dependencies': [], 'arguments': ['train-model'],
+            'placement_clusters': ['ai2/jupiter'], 'receipt': {'workload_id': 'old'},
+            'runtime_batch': {'micro_batch_size': 16}, 'runtime_batch_verified': {'step': 1}}
+    state = {'campaign': 'test', 'study': {'training_placement_clusters': list(runtime_batch.GPU_CLUSTERS)},
+             'nodes': {'train': node}}
+    campaign.retry_node(state, 'train')
+    assert node['placement_clusters'] == list(runtime_batch.GPU_CLUSTERS)
+    assert 'runtime_batch' not in node and 'runtime_batch_verified' not in node
+    assert node['previous_attempts'][-1]['runtime_batch'] == {'micro_batch_size': 16}
+    assert node['previous_attempts'][-1]['placement_clusters'] == ['ai2/jupiter']
+    assert node['arguments'] == ['train-model']

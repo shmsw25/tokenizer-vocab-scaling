@@ -507,7 +507,8 @@ def retry_node(state, key):
     if sum(attempt.get('kind') not in {'reconfiguration', 'scheduling_change'} for attempt in history) >= 2:
         raise ValueError('Already attempted three times; investigate before creating a new campaign')
     history.append({k: node[k] for k in ('receipt', 'job_status', 'progress', 'health_stop',
-                   'reported_metrics', 'wandb_observation', 'arguments', 'resume_authorization') if k in node})
+                   'reported_metrics', 'wandb_observation', 'arguments', 'resume_authorization',
+                   'placement_clusters', 'min_runtime', 'runtime_batch', 'runtime_batch_verified') if k in node})
     if node['stage'] == 'train-model' and node.get('chain_evaluation'):
         # A stopped training chain has not executed its children; retain their old receipts.
         for child in state['nodes'].values():
@@ -537,9 +538,11 @@ def retry_node(state, key):
     for field in ('receipt', 'job_id', 'job_status', 'progress', 'assignment', 'assigned_gpus',
                   'monitor_error', 'submission_error', 'summary', 'resource_warning', 'hostname',
                   'chain_snapshot', 'chain_job_status', 'health_stop', 'wandb_final_checked',
-                  'wandb_observation', 'resume_verified'):
+                  'wandb_observation', 'resume_verified', 'runtime_batch', 'runtime_batch_verified'):
         node.pop(field, None)
     node['status'] = 'pending'
+    if node['stage'] == 'train-model' and state.get('study', {}).get('training_placement_clusters'):
+        node.update(placement_clusters=list(state['study']['training_placement_clusters']), min_runtime='3h')
     node['name'] = f"{state['campaign']}-{key.replace('_', '-')}-retry{len(history)}"
 
 
