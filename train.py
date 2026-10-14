@@ -268,8 +268,8 @@ def main():
             print('OPTIMIZER_GROUPS ' + json.dumps(optimizer_groups), flush=True)
         started = time.monotonic()
         trainer.fit()
-        if trainer.global_step < trainer.max_steps:
-            raise RuntimeError('Training stopped before its target; do not convert or evaluate as a completed trial')
+        if trainer.global_step < trainer.max_steps or (output_dir / 'health_stop.json').is_file():
+            raise RuntimeError('Training incomplete or unhealthy; do not convert or evaluate as a completed trial')
         if get_rank() == 0:
             from scripts.pipeline import write_json
             write_json(output_dir / 'training_metrics.json', {

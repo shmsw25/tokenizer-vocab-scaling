@@ -186,7 +186,7 @@ class WSDCheckpointerCallback(CheckpointerCallback):
 
 @dataclass
 class LossHealthCallback(Callback):
-    """Allow finite spikes and recovery; stop only persistent non-recovering loss."""
+    """Stop clear unhealthy curves; allow brief review-only spikes to recover."""
     output_dir: str
     warmup_steps: int
     window_size: int = 50
@@ -200,10 +200,14 @@ class LossHealthCallback(Callback):
     last_recovery_step: int | None = None
     last_step: int = -1
     stopped: bool = False
+    curve_values: list = field(default_factory=list)
+    spike_streak: int = 0
+    severe_streak: int = 0
 
     def state_dict(self):
         return {k: getattr(self, k) for k in ('values', 'best', 'previous_median',
-                'high_since', 'last_recovery_step', 'last_step')}
+                'high_since', 'last_recovery_step', 'last_step',
+                'curve_values', 'spike_streak', 'severe_streak')}
 
     def load_state_dict(self, state_dict):
         for key in self.state_dict():
@@ -215,16 +219,35 @@ class LossHealthCallback(Callback):
         self.high_since = None
         self.last_recovery_step = self.step
         self.stopped = False
+        self.curve_values = []
+        self.spike_streak = self.severe_streak = 0
 
     def log_metrics(self, step, metrics):
         if get_rank() != 0 or 'train/CE loss' not in metrics or self.stopped or step <= self.last_step:
             return
+        from scripts.loss_curve_health import POLICY, spike_flags
+        previous_step = self.last_step
         self.last_step = step
         value = float(metrics['train/CE loss'])
         reason = None
+        curve_evidence = None
+        if math.isfinite(value):
+            reference = statistics.median(self.curve_values) if self.curve_values else None
+            spike = severe = False
+            if (step >= self.warmup_steps + POLICY['warmup_grace_steps']
+                    and len(self.curve_values) == POLICY['baseline_observations']):
+                spike, severe = spike_flags(value, reference)
+            self.spike_streak = (self.spike_streak + 1 if previous_step == step - 1 else 1) if spike else 0
+            self.severe_streak = (self.severe_streak + 1 if previous_step == step - 1 else 1) if severe else 0
+            self.curve_values = (self.curve_values + [value])[-POLICY['baseline_observations']:]
+            if (self.spike_streak >= POLICY['sustained_consecutive_observations']
+                    or self.severe_streak >= POLICY['severe_consecutive_observations']):
+                curve_evidence = {'policy': dict(POLICY), 'preceding_median': reference,
+                                  'spike_streak': self.spike_streak, 'severe_streak': self.severe_streak}
+                reason = 'Unhealthy training CE spike under loss-curve policy v2'
         if not math.isfinite(value):
             reason = 'Non-finite training CE loss'
-        elif step >= self.warmup_steps + 100:
+        elif reason is None and step >= self.warmup_steps + 100:
             self.values = (self.values + [value])[-self.window_size:]
             if len(self.values) == self.window_size:
                 median = statistics.median(self.values)
@@ -244,7 +267,8 @@ class LossHealthCallback(Callback):
         if reason:
             from scripts.pipeline import write_json
             record = {'step': step, 'reason': reason, 'loss': value if math.isfinite(value) else None,
-                      'policy_version': 2, 'window_size': self.window_size,
+                      'policy_version': 3, 'classification': 'unhealthy',
+                      'loss_curve_evidence': curve_evidence, 'window_size': self.window_size,
                       'loss_multiple': self.loss_multiple, 'patience_steps': self.patience_steps,
                       'recovery_grace_steps': self.recovery_grace_steps,
                       'last_recovery_step': self.last_recovery_step}

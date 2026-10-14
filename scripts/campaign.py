@@ -363,6 +363,11 @@ def refresh(state, folder):
                 node.pop('submission_error', None)
                 node['status'] = BeakerWorkloadStatus(workload.status).name
                 workload_status = node['status']
+                stop = node.get('unhealthy_stop')
+                if stop and stop['workload_id'] == node['receipt']['workload_id']:
+                    stop.update(observed_at=now(), observed_status=workload_status)
+                    if workload_status == 'canceled':
+                        stop.setdefault('confirmed_at', now())
                 node['checked_at'] = now()
                 job = b.workload.get_latest_job(workload)
                 detail = MessageToDict(job)
@@ -486,9 +491,93 @@ def submit_ready(state, path, max_submissions=None):
         write_json(path, state)
 
 
+def stop_unhealthy_training(state, state_path):
+    """Cancel only current study training allocations with an unhealthy verdict."""
+    import copy
+    import hashlib
+    from beaker import Beaker, BeakerWorkloadStatus
+    from google.protobuf.json_format import MessageToDict
+    from loss_curve_health import invalid_result
+    if not state.get('study', {}).get('stop_unhealthy_training', {}).get('enabled'):
+        return
+    targets = [(key, node) for key, node in state['nodes'].items()
+               if node['stage'] == 'train-model' and not node.get('chain_parent')
+               and node.get('receipt') and invalid_result(node)
+               and node.get('chain_job_status', node['status']) not in TERMINAL]
+    if not targets:
+        return
+    with Beaker.from_env(default_workspace=state['workspace'], check_for_upgrades=False) as b:
+        for key, node in targets:
+            wid = node['receipt']['workload_id']
+            try:
+                workload = b.workload.get(wid)
+                if workload.experiment.id != wid:
+                    raise ValueError('Current training receipt identity mismatch')
+                before_status = BeakerWorkloadStatus(workload.status).name
+                if before_status in TERMINAL:
+                    # Normal refresh must collect final summaries before changing stage status.
+                    node['unhealthy_stop_terminal_observed'] = {'at': now(), 'status': before_status}
+                    write_json(state_path, state)
+                    continue
+                event = node.get('unhealthy_stop')
+                if event is None or event['workload_id'] != wid:
+                    event = {'requested_at': now(), 'workload_id': wid,
+                             'receipt': copy.deepcopy(node['receipt']), 'prior_status': before_status,
+                             'reason': 'Stop training classified unhealthy under the user-authorized loss policy',
+                             'loss_curve_review': copy.deepcopy(node.get('loss_curve_review')),
+                             'loss_health_decision': copy.deepcopy(node.get('loss_health_decision'))}
+                    archive = state_path.parent / 'unhealthy-stops' / hashlib.sha256(wid.encode()).hexdigest()
+                    event['history_archives'] = []
+                    for source in (event['loss_curve_review'] or {}).get('sources', []):
+                        if source.get('history_file') and source.get('history_sha256'):
+                            try:
+                                payload = Path(source['history_file']).read_bytes()
+                                if hashlib.sha256(payload).hexdigest() != source['history_sha256']:
+                                    raise ValueError('Loss-history hash mismatch')
+                                archive.mkdir(parents=True, exist_ok=True)
+                                target = archive / (source['history_sha256'] + '.json')
+                                if not target.exists():
+                                    target.write_bytes(payload)
+                                event['history_archives'].append(str(target))
+                            except (OSError, ValueError) as error:
+                                # Preserve the verdict and still stop; missing local cache must not prolong training.
+                                event.setdefault('archive_errors', []).append(type(error).__name__)
+                    node['unhealthy_stop'] = event
+                for child_key, child in state['nodes'].items():
+                    if child_key == key or child.get('chain_parent') == key:
+                        child['hold_reason'] = event['reason'] + '; no automatic retry or replacement'
+                        child['unhealthy_stop_parent'] = key
+                # Persist intent and evidence before the external cancellation (safe to resume).
+                write_json(state_path, state)
+                event['cancel_requested_at'] = now()
+                if before_status != 'stopping':
+                    list(b.workload.cancel(workload))
+                after = b.workload.get(wid)
+                after_status = BeakerWorkloadStatus(after.status).name
+                event.update(observed_at=now(), observed_status=after_status)
+                if after_status == 'canceled':
+                    event['confirmed_at'] = now()
+                job = b.workload.get_latest_job(after)
+                details = MessageToDict(job) if job else {}
+                node.update(status=after_status, job_status=details.get('status', {}), checked_at=now())
+                if job:
+                    node['job_id'] = job.id
+                if node.get('chain_evaluation'):
+                    apply_chain_snapshot(state, key, node.get('chain_snapshot',
+                                         {'current_stage': 'train-model', 'summaries': {}}), after_status)
+                node['progress'] = {'text': 'Stopped: unhealthy training loss' if after_status == 'canceled'
+                                    else 'Unhealthy training: stop requested', 'eta': 'Not applicable'}
+                node.pop('unhealthy_stop_error', None)
+            except Exception as error:
+                node['unhealthy_stop_error'] = type(error).__name__ + ': unable to confirm unhealthy training stopped'
+            write_json(state_path, state)
+
+
 def retry_node(state, key):
     from adaptive_study import excluded_run
     node = state['nodes'][key]
+    if node.get('unhealthy_stop_parent') or node.get('health_stop', {}).get('classification') == 'unhealthy':
+        raise ValueError('Unhealthy-stopped runs require new explicit user authorization before retry')
     if excluded_run(state, node):
         raise ValueError('Cannot retry a run with a learning rate excluded by the user')
     if node.get('chain_job_status') and node['chain_job_status'] not in TERMINAL:
@@ -604,6 +693,7 @@ def main():
             from adaptive_study import advance_plan, monitor_wandb
             if not args.offline:
                 monitor_wandb(state)
+                stop_unhealthy_training(state, args.state)
             advance_plan(state)
         if args.migrate_pools:
             migrate_pools(state, args.vocabs, args.models, args.pool_sizes, args.training_pools)
@@ -626,7 +716,7 @@ def main():
                           'counts': counts, 'report': str(report),
                           'active': {key: {field: node[field] for field in
                                      ('status', 'progress', 'hostname', 'assigned_gpus', 'resource_warning',
-                                      'monitor_error', 'submission_error', 'receipt') if field in node}
+                                      'monitor_error', 'unhealthy_stop_error', 'submission_error', 'receipt') if field in node}
                                      for key, node in state['nodes'].items() if node['status'] not in {'pending', 'succeeded'}}}, indent=2))
 
 

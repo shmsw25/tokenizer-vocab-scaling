@@ -23,13 +23,23 @@ def invalid_result(node):
     decision = node.get('loss_health_decision', {}).get('status')
     if decision is not None:
         return decision == 'unhealthy'
+    if node.get('health_stop', {}).get('classification') == 'unhealthy':
+        return True
     return node.get('loss_curve_review', {}).get('status') == 'unhealthy'
+
+
+def spike_flags(value, reference):
+    """Shared thresholds for the full-history auditor and in-job loss guard."""
+    spike = value >= POLICY['loss_multiple'] * reference and value - reference >= POLICY['minimum_increase']
+    severe = (spike and value >= POLICY['severe_loss_multiple'] * reference
+              and value - reference >= POLICY['severe_minimum_increase'])
+    return spike, severe
 
 
 def analyze_history(rows, warmup_steps=192):
     """Compare each post-warmup loss to the preceding 100 finite observations.
 
-    This is a review heuristic, not a statistical test or an early-stop rule.
+    This is an operational validity policy, not a statistical test.
     Missing/null W&B values are not evidence of NaN training loss.
     """
     points = {}
@@ -56,12 +66,10 @@ def analyze_history(rows, warmup_steps=192):
         severe = spike = False
         if step >= warmup_steps + POLICY['warmup_grace_steps'] and len(baseline) == baseline.maxlen:
             reference = statistics.median(baseline)
-            if value >= POLICY['loss_multiple'] * reference and value - reference >= POLICY['minimum_increase']:
-                spike = True
+            spike, severe = spike_flags(value, reference)
+            if spike:
                 spikes.append({'step': step, 'loss': value, 'preceding_median': reference,
                                'multiple': value / reference if reference > 0 else None})
-                severe = (value >= POLICY['severe_loss_multiple'] * reference
-                          and value - reference >= POLICY['severe_minimum_increase'])
         # Require adjacent optimizer steps, so sparse observations cannot manufacture persistence.
         severe_streak = (severe_streak + 1 if previous_step == step - 1 else 1) if severe else 0
         longest_severe_streak = max(longest_severe_streak, severe_streak)

@@ -108,7 +108,7 @@ def build_report_data(state):
                        ('completed', 'running', 'queued', 'planned', 'failed', 'canceled')}})
     runs = []
     for key, node in nodes.items():
-        if node['stage'] != 'train-model' or node['status'] == 'canceled':
+        if node['stage'] != 'train-model' or (node['status'] == 'canceled' and not node.get('unhealthy_stop')):
             continue
         if excluded_run(state, node) or node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
@@ -143,6 +143,7 @@ def build_report_data(state):
                      'result_valid': not invalid,
                      'loss_curve_review': node.get('loss_curve_review'),
                      'loss_health_decision': node.get('loss_health_decision'),
+                     'unhealthy_stop': node.get('unhealthy_stop'),
                      'eval_status': display_status(evaluation.get('status', 'pending')),
                      'conversion_status': display_status(conversion.get('status', 'pending')),
                      'lr': cfg['training']['learning_rate'], 'wd': cfg['training']['weight_decay'],

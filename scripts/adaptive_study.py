@@ -462,7 +462,8 @@ def monitor_wandb(state):
     cache_dir = REPO / '.build/loss-curve-health/histories'
     candidates = [n for n in state['nodes'].values() if n['stage'] == 'train-model'
                   and not excluded_run(state, n) and not n.get('legacy_architecture')
-                  and n.get('study_role') != 'superseded_plan' and n['status'] != 'canceled']
+                  and n.get('study_role') != 'superseded_plan'
+                  and (n['status'] != 'canceled' or n.get('unhealthy_stop'))]
     missing = [n for n in candidates if not n.get('reported_metrics', {}).get('wandb_path') and n.get('receipt')
                and n['status'] in ('running', 'succeeded', 'failed')]
     if missing:

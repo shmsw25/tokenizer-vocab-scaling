@@ -204,3 +204,87 @@ def test_discovery_uses_published_links_and_caches_terminal_beaker_fallback(tmp_
     assert logged_wandb_links([{'message': 'wandb: View run at https://forge.coreweave.com/wandb/ai2-llm/tokenizer-scaling/runs/real123?nw=1'}]) == {
         'ai2-llm/tokenizer-scaling/real123': 'https://forge.coreweave.com/wandb/ai2-llm/tokenizer-scaling/runs/real123'}
     assert logged_wandb_links([{'message': 'https://beaker.org/ex/workload'}]) == {}
+
+
+def test_controller_stops_only_current_unhealthy_training_and_preserves_children(monkeypatch, tmp_path):
+    from beaker import Beaker, BeakerWorkloadStatus
+    from google.protobuf import json_format
+    from unittest.mock import MagicMock
+    s = fixture(); key = 'train-small-5gb-32000'; n = s['nodes'][key]
+    n.update(status='running', receipt={'workload_id': 'current'}, chain_evaluation=True,
+             chain_job_status='running', chain_snapshot={'current_stage':'train-model','summaries':{}},
+             loss_curve_review={'status':'unhealthy','sources':[{'history_sha256':'evidence'}]},
+             previous_attempts=[{'receipt':{'workload_id':'old'}}])
+    child = study.eval_key(key)
+    s['nodes'][child].update(chain_parent=key, receipt={'workload_id':'current'})
+    s['nodes']['validation-live'] = {'stage':'validate-model','status':'running',
+                                    'receipt':{'workload_id':'validation'}}
+    gray = 'train-small-5gb-64000'; s['nodes'][gray].update(status='running',
+        loss_curve_review={'status':'review_needed'})
+    allowed = 'train-small-5gb-128000'; s['nodes'][allowed].update(status='running',
+        loss_curve_review={'status':'unhealthy'},loss_health_decision={'status':'valid'})
+    s['study']['stop_unhealthy_training'] = {'enabled':True}
+    b = MagicMock(); b.__enter__.return_value = b
+    monkeypatch.setattr(Beaker, 'from_env', lambda **kw:b)
+    workload = lambda status:SimpleNamespace(experiment=SimpleNamespace(id='current'),
+                                            status=BeakerWorkloadStatus[status].value)
+    b.workload.get.side_effect = [workload('running'),workload('canceled')]
+    b.workload.get_latest_job.return_value = SimpleNamespace(id='job')
+    monkeypatch.setattr(json_format,'MessageToDict',lambda job:{'status':{'status':'STATUS_CANCELED'}})
+    path=tmp_path/'state.json'; persisted=[]
+    def cancel(w):
+        persisted.append(json.loads(path.read_text())['nodes'][key]['unhealthy_stop'])
+        return iter(['current'])
+    b.workload.cancel.side_effect=cancel
+    untouched={k:copy.deepcopy(s['nodes'][k]) for k in ('validation-live',gray,allowed)}
+    receipt=copy.deepcopy(n['receipt']); history=copy.deepcopy(n['previous_attempts'])
+    campaign.stop_unhealthy_training(s,path)
+    assert n['status']=='canceled' and n['chain_job_status']=='canceled'
+    assert n['unhealthy_stop']['confirmed_at'] and persisted[0]['loss_curve_review']['status']=='unhealthy'
+    assert n['receipt']==receipt and n['previous_attempts']==history
+    assert s['nodes'][child]['unhealthy_stop_parent']==key and s['nodes'][child]['hold_reason']
+    assert all(s['nodes'][k]==v for k,v in untouched.items())
+    assert b.workload.get.call_args_list[0].args==('current',)
+    campaign.stop_unhealthy_training(s,path)
+    assert b.workload.cancel.call_count==1
+    import pytest
+    with pytest.raises(ValueError,match='new explicit user authorization'):
+        campaign.retry_node(s,key)
+    data=report.build_report_data({**s,'nodes':{k:v for k,v in s['nodes'].items() if k!='validation-live'}})
+    row=next(r for r in data['runs'] if r['id']==key)
+    assert row['status']=='unhealthy' and row['training_status']=='canceled'
+    assert all(v is None for v in row['metrics'].values())
+    assert row['unhealthy_stop']['workload_id']=='current'
+
+
+def test_controller_stop_requires_authorization_and_matching_receipt(monkeypatch,tmp_path):
+    from beaker import Beaker, BeakerWorkloadStatus
+    from unittest.mock import MagicMock
+    s=fixture();n=s['nodes']['train-small-5gb-32000']
+    n.update(status='running',loss_curve_review={'status':'unhealthy'},receipt={'workload_id':'current'})
+    b=MagicMock();b.__enter__.return_value=b
+    monkeypatch.setattr(Beaker,'from_env',lambda **kw:b)
+    campaign.stop_unhealthy_training(s,tmp_path/'state.json')
+    b.workload.get.assert_not_called()
+    s['study']['stop_unhealthy_training']={'enabled':True}
+    b.workload.get.return_value=SimpleNamespace(experiment=SimpleNamespace(id='wrong'),status=BeakerWorkloadStatus.running.value)
+    campaign.stop_unhealthy_training(s,tmp_path/'state.json')
+    b.workload.cancel.assert_not_called()
+    assert n['unhealthy_stop_error'] and n['status']=='running'
+
+
+def test_native_guard_matches_auditor_and_stops_before_recovery(tmp_path):
+    from scripts.training_callbacks import LossHealthCallback
+    for count,spike,stop_step in [(5,5.43,404),(3,10.,402),(2,5.43,None)]:
+        cb=LossHealthCallback(str(tmp_path/f'{count}-{spike}'),warmup_steps=192)
+        calls=[];cb.trainer=SimpleNamespace(cancel_run=calls.append)
+        rows=curve(spike,count)
+        for r in rows:cb.log_metrics(r['_step'],{'train/CE loss':r['train/CE loss']})
+        expected=analyze_history(rows)['status']=='unhealthy'
+        assert bool(calls)==expected
+        if expected:
+            record=json.loads((Path(cb.output_dir)/'health_stop.json').read_text())
+            assert record['step']==stop_step and record['classification']=='unhealthy'
+            assert record['loss_curve_evidence']['policy']['version']==2
+            assert invalid_result({'health_stop':record,'loss_curve_review':{'status':'unavailable'}})
+        else:assert not cb.stopped
