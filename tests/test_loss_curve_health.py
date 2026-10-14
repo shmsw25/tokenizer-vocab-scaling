@@ -129,3 +129,22 @@ def test_pending_infrastructure_investigation_is_still_not_negative_lr_evidence(
     assert study.completed_score(node) is None
     node['loss_curve_review']['status'] = 'unhealthy'
     assert study.completed_score(node) is None
+
+
+def test_user_invalidated_endpoint_is_excluded_from_backfill_without_canceling_validation():
+    s = state_fixture(); key = 'train-small-5gb-32000'; n = s['nodes'][key]
+    n.update(status='succeeded', loss_curve_review={'status': 'review_needed'},
+             loss_health_decision={'status': 'unhealthy', 'source': 'user'})
+    validation = key.replace('train-', 'validation-', 1)
+    s['nodes'][validation] = {'stage': 'validate-model', 'status': 'queued',
+                             'receipt': {'workload_id': 'existing-validation'}}
+    s['study'] = {'validation_node': 'prepare-validation',
+                  'validation_backfill': {'targets': [key], 'status': 'pending'}}
+    before = copy.deepcopy(s['nodes'])
+    study.sync_shared_validation(s)
+    backfill = s['study']['validation_backfill']
+    assert backfill['skipped_unhealthy'] == [key] and backfill['status'] == 'complete'
+    assert s['study']['shared_validation_nodes'] == []
+    assert set(s['nodes']) == set(before)
+    assert s['nodes'][key] == before[key]
+    assert s['nodes'][validation] == before[validation]  # Keep the queued receipt intact.

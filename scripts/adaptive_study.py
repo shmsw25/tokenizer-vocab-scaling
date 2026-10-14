@@ -501,7 +501,8 @@ def sync_shared_validation(state):
     if backfill:
         backfill['completed'] = [key for key in backfill['targets'] if nodes[key].get('shared_validation')]
         backfill['skipped_unhealthy'] = [key for key in backfill['targets']
-            if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled')]
+            if invalid_result(nodes[key])
+            or (nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled'))]
         backfill['skipped_excluded'] = [key for key in backfill['targets'] if excluded_run(state,nodes[key])]
         if len(set(backfill['completed'] + backfill['skipped_unhealthy'] + backfill['skipped_excluded'])) == len(backfill['targets']):
             backfill['status'] = 'complete'
