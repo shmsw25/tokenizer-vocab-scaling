@@ -21,7 +21,11 @@ Run `.venv/bin/python scripts/campaign.py --advance` every 30 minutes; never
 reinitialize it. `adaptive_study.py` manages nine independent 5GB LR brackets:
 baseline, half the LR, then another halving if validation BPB improves or twice
 the baseline otherwise. The lowest final validation BPB selects the LR for
-that model/vocabulary pair, which transfers unchanged to 10GB, 20GB, and 100GB.
+that model/vocabulary pair for 100GB. The October 14 override adds an independent
+1e-3 / 2e-3 comparison for every model/vocabulary pair on both 10GB and 20GB,
+recorded in `study.pool_lr_search`. Choose each pool's lowest final validation BPB;
+keep held-out evaluation separate from LR selection. This supersedes transferring
+one 5GB-selected rate to those two pools.
 Completed matching runs are reused, and old pending recipes remain in state
 as superseded plans. Existing running allocations are preserved.
 
@@ -34,9 +38,20 @@ concurrently are outside this controller; each admission rechecks live usage.
 
 New training logs to W&B using the existing `SEWONM_WANDB_API_KEY` Beaker secret.
 The monitor queries W&B summaries and retains Beaker loss logs. An in-job guard
-stops on non-finite CE or 20 consecutive rolling-median windows above 1.5 times
-the best post-warmup median (20 observations per window; enabled after warmup
-plus 100 steps). A stopped trial is not converted or counted as completed.
+stops immediately on non-finite CE. For finite loss, a 50-observation median must
+remain above twice its best post-warmup value for 1,000 optimizer steps, with no
+decrease in that median for 500 steps. Any decrease resets the recovery grace.
+The guard starts after warmup plus 100 steps and permits recovery after spikes.
+A stopped trial is not converted or counted as completed.
+
+The user authorized resuming all 16 old guard stops at their original LRs.
+`--resume-latest` is operational: it does not change model paths or the recipe.
+It requires complete checkpoint metadata, optimizer shards, and every rank's
+trainer state before restoring model, optimizer, loader, trainer, and RNG state.
+`RESUME_VERIFIED` records the actual restored step. Old stop records and receipts
+are archived; they must not mark the resumed attempt unhealthy. Use repeated
+`--retry-node KEY` after live terminal-state checks. Resumes take admission
+precedence over new LR variants; `--max-submissions 1` permits a canary rollout.
 
 After selected-LR 10GB/20GB evaluations, the 100GB parent is copied once to
 `raw_text/100GB/training/`, excluding the same 1,000 shared held-out records.

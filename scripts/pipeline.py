@@ -79,6 +79,8 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--branch-from', type=Path)
         parser.add_argument('--wandb-project')
         parser.add_argument('--health-check', action='store_true')
+        parser.add_argument('--resume-latest', action='store_true',
+                            help='Require and restore the latest full-state checkpoint; never start over')
         parser.add_argument('--eval-interval', type=positive_int)
     if stage == 'evaluate-model':
         parser.add_argument('--evals', nargs='+', choices=EVALS, default=list(EVALS))
@@ -368,11 +370,30 @@ def train_model(args):
             history.write(os.environ.get('TOKENIZER_CODE_REVISION', 'local') + '\n')
         print(f'Model output: {output}', flush=True)
         print(f'Scaled sequence length: {cfg["seq_length"]}', flush=True)
+        resume_args = []
+        if args.resume_latest:
+            checkpoint = latest_checkpoint(output)
+            # Validate all ranks before the distributed restore, which also validates tensor metadata.
+            required = [checkpoint / 'train' / f'rank{rank}.pt' for rank in range(args.gpus)]
+            required += list((checkpoint / 'model_and_optim').glob('*.distcp'))
+            if len(required) == args.gpus or any(not p.is_file() or not p.stat().st_size for p in required):
+                raise ValueError(f'Incomplete full-state resume checkpoint: {checkpoint}')
+            record = {'checkpoint': str(checkpoint), 'step': int(checkpoint.name[4:]),
+                      'learning_rate': cfg['training']['learning_rate'],
+                      'source_revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
+            write_json(output / 'resume_request.json', record)
+            old_stop = output / 'health_stop.json'
+            if old_stop.is_file():
+                archive = output / 'health_stop_history'
+                archive.mkdir(exist_ok=True)
+                old_stop.rename(archive / f'{time.time_ns()}.json')
+            print('RESUME_REQUEST ' + json.dumps(record), flush=True)
+            resume_args = ['--resume-from', str(checkpoint)]
         started = time.monotonic()
         run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
              f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
              '--data-dir', tokenized_dir(args), '--output-dir', output,
-             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}'])
+             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}', *resume_args])
         checkpoint = latest_checkpoint(output)
         write_json(output / 'training_summary.json', {
             'model_size': args.model_size, 'vocab_size': args.vocab_size, 'data_size': args.data_size,

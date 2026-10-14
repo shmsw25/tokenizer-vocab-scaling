@@ -42,7 +42,7 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
             source.writelines(f'{start},{start + 16}\n' for start in range(0, 64, 16))
     output = tmp_path / 'model'
 
-    def build():
+    def build(save_folder=output):
         model = TransformerConfig.llama_like(
             d_model=16, n_layers=1, n_heads=2, vocab_size=128,
             tie_word_embeddings=True, attn_backend=AttentionBackendName.torch).build(init_device='cpu')
@@ -61,7 +61,7 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
             warmup_steps=2, decay_fraction=0.3, save_interval=7,
             pre_train_checkpoint=False, save_async=True)
         trainer = TrainerConfig(
-            save_folder=str(output), work_dir=str(tmp_path / 'work'), device='cpu',
+            save_folder=str(save_folder), work_dir=str(tmp_path / 'work'), device='cpu',
             max_duration=Duration.steps(10), metrics_collect_interval=1,
             callbacks={'checkpointer': callback, 'config_saver': ConfigSaverCallback(),
                        'report_metrics': ReportMetricsCallback(str(output), 0.25, 0.24)},
@@ -94,13 +94,18 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
     assert callback._checkpoints.count(str(checkpoint)) == 1  # interval also equals 7
 
     # Restore actual model/optimizer/dataloader state at the branch point.
-    resumed, _ = build()
+    resumed, _ = build(tmp_path / 'continued')
     resumed.load_checkpoint(checkpoint)
     assert resumed.global_step == 7
     assert resumed.data_loader.batches_processed == (3 if repack else 7)
     assert resumed.train_module.optim.param_groups[0]['lr'] == pytest.approx(0.001)
     assert resumed.train_module.optim.state
     assert resumed.train_module.scheduler.get_lr(0.001, 8, 10) < 0.001
+    resumed.fit()
+    assert resumed.global_step == 10
+    assert resumed.data_loader.batches_processed == trainer.data_loader.batches_processed
+    for original, continued in zip(trainer.train_module.model.parameters(), resumed.train_module.model.parameters()):
+        assert torch.equal(original, continued)
     # Restarting a completed run reconstructs a missing index without deleting the checkpoint.
     record_path.unlink()
     finished, _ = build()

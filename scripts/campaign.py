@@ -96,10 +96,11 @@ def migrate_pools(state, vocabs, models, pools, training_pools):
 def ready_nodes(state):
     if state.get('submission_hold'):
         return []
-    return [key for key, node in state['nodes'].items()
+    ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
             and not node.get('hold_reason')
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
+    return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
 
 
 def prepare_chains(state):
@@ -321,7 +322,9 @@ def refresh(state, folder):
                                         node['reported_metrics'] = metrics
                                 except (ValueError, TypeError):
                                     pass  # A truncated log line is not a metric observation.
-                            for prefix, field in [('WSD_BRANCH_READY ', 'branch_checkpoints'), ('HEALTH_STOP ', 'health_stop')]:
+                            for prefix, field in [('WSD_BRANCH_READY ', 'branch_checkpoints'),
+                                                  ('HEALTH_STOP ', 'health_stop'),
+                                                  ('RESUME_VERIFIED ', 'resume_verified')]:
                                 if fragment.startswith(prefix):
                                     node[field] = json.loads(fragment[len(prefix):])
                 pool = state['nodes'].get(f"sample-{size_key(node.get('data_size') or '100GB')}", {})
@@ -358,8 +361,11 @@ def refresh(state, folder):
         state['checked_at'] = now()
 
 
-def submit_ready(state, path):
+def submit_ready(state, path, max_submissions=None):
+    submitted = 0
     for key in ready_nodes(state):
+        if max_submissions is not None and submitted >= max_submissions:
+            break
         node = state['nodes'][key]
         if any(state['nodes'][dep].get('monitor_error') for dep in node['dependencies']):
             continue
@@ -392,6 +398,7 @@ def submit_ready(state, path):
             subprocess.run(command, cwd=REPO, check=True)
             node['receipt'] = read_json(receipt_path)
             node['status'] = 'submitted'
+            submitted += 1
             node.pop('submission_error', None)
             prepare_chains(state)
         except Exception as error:
@@ -401,6 +408,10 @@ def submit_ready(state, path):
 
 def retry_node(state, key):
     node = state['nodes'][key]
+    if node.get('chain_job_status') and node['chain_job_status'] not in TERMINAL:
+        raise ValueError('Cannot retry a stage while its shared job is still active')
+    if node.get('health_stop') and '--resume-latest' not in node['arguments']:
+        raise ValueError('Health-stopped runs require an explicitly authorized checkpoint resume')
     if node.get('chain_parent'):
         owner = state['nodes'][node['chain_parent']]
         if owner.get('chain_job_status') not in TERMINAL:
@@ -419,7 +430,17 @@ def retry_node(state, key):
     history = node.setdefault('previous_attempts', [])
     if sum(attempt.get('kind') not in {'reconfiguration', 'scheduling_change'} for attempt in history) >= 2:
         raise ValueError('Already attempted three times; investigate before creating a new campaign')
-    history.append({k: node[k] for k in ('receipt', 'job_status', 'progress') if k in node})
+    history.append({k: node[k] for k in ('receipt', 'job_status', 'progress', 'health_stop',
+                   'reported_metrics', 'wandb_observation', 'arguments', 'resume_authorization') if k in node})
+    if node['stage'] == 'train-model' and node.get('chain_evaluation'):
+        # A stopped training chain has not executed its children; retain their old receipts.
+        for child in state['nodes'].values():
+            if child.get('chain_parent') == key:
+                if child.get('receipt'):
+                    child.setdefault('previous_attempts', []).append({'receipt': child['receipt'],
+                        'kind': 'reconfiguration', 'reason': 'Parent training resumed from checkpoint'})
+                for field in ('receipt', 'job_id', 'job_status', 'assignment', 'assigned_gpus', 'hostname'):
+                    child.pop(field, None)
     if node.get('chain_parent'):
         owner_key = node.pop('chain_parent')
         owner = state['nodes'][owner_key]
@@ -439,7 +460,8 @@ def retry_node(state, key):
                 child['status'] = 'pending'
     for field in ('receipt', 'job_id', 'job_status', 'progress', 'assignment', 'assigned_gpus',
                   'monitor_error', 'submission_error', 'summary', 'resource_warning', 'hostname',
-                  'chain_snapshot', 'chain_job_status'):
+                  'chain_snapshot', 'chain_job_status', 'health_stop', 'wandb_final_checked',
+                  'wandb_observation', 'resume_verified'):
         node.pop(field, None)
     node['status'] = 'pending'
     node['name'] = f"{state['campaign']}-{key.replace('_', '-')}-retry{len(history)}"
@@ -465,7 +487,8 @@ def main():
     parser.add_argument('--workspace', default='ai2/flex2')
     parser.add_argument('--owner', default='sewonm')
     parser.add_argument('--advance', action='store_true', help='Submit stages whose prerequisites have succeeded')
-    parser.add_argument('--retry-node', help='Retry a diagnosed failure or a confirmed missing submission (requires --advance)')
+    parser.add_argument('--retry-node', action='append', help='Retry a diagnosed terminal failure; repeat for multiple nodes (requires --advance)')
+    parser.add_argument('--max-submissions', type=int, help='Limit this advance to N submissions for a verified rollout')
     parser.add_argument('--offline', action='store_true', help='Render saved state without Beaker access')
     args = parser.parse_args()
     args.state = args.state.resolve()
@@ -500,13 +523,14 @@ def main():
         if args.retry_node:
             if not args.advance or args.offline:
                 parser.error('--retry-node requires --advance and live status checking')
-            retry_node(state, args.retry_node)
+            for key in args.retry_node:
+                retry_node(state, key)
         write_json(args.state, state)
         if args.advance:
             if args.offline:
                 parser.error('--offline cannot submit jobs')
             # No live gRPC client exists while git archive/submission subprocesses run.
-            submit_ready(state, args.state)
+            submit_ready(state, args.state, max_submissions=args.max_submissions)
         report = args.state.parent / 'report.html'
         render_report(state, report)
         write_json(args.state, state)

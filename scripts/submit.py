@@ -104,6 +104,8 @@ def stage_arguments(args):
             result.append('--no-compile')
         if args.health_check:
             result.append('--health-check')
+        if args.resume_latest:
+            result.append('--resume-latest')
         if args.decay_horizons:
             result += ['--decay-horizons', *map(str, args.decay_horizons)]
     if args.stage == 'evaluate-model':

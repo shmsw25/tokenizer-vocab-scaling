@@ -157,31 +157,69 @@ class WSDCheckpointerCallback(CheckpointerCallback):
 
 @dataclass
 class LossHealthCallback(Callback):
-    """Conservative divergence guard; a stopped trial is never a completed run."""
+    """Allow finite spikes and recovery; stop only persistent non-recovering loss."""
     output_dir: str
     warmup_steps: int
+    window_size: int = 50
+    loss_multiple: float = 2.0
+    patience_steps: int = 1000
+    recovery_grace_steps: int = 500
     values: list = field(default_factory=list)
     best: float = float('inf')
-    unhealthy_windows: int = 0
+    previous_median: float = float('inf')
+    high_since: int | None = None
+    last_recovery_step: int | None = None
+    last_step: int = -1
+    stopped: bool = False
+
+    def state_dict(self):
+        return {k: getattr(self, k) for k in ('values', 'best', 'previous_median',
+                'high_since', 'last_recovery_step', 'last_step')}
+
+    def load_state_dict(self, state_dict):
+        for key in self.state_dict():
+            if key in state_dict:
+                setattr(self, key, state_dict[key])
+
+    def pre_train(self):
+        # A resumed run gets a fresh grace period, without changing model/optimizer state.
+        self.high_since = None
+        self.last_recovery_step = self.step
+        self.stopped = False
 
     def log_metrics(self, step, metrics):
-        if get_rank() != 0 or 'train/CE loss' not in metrics:
+        if get_rank() != 0 or 'train/CE loss' not in metrics or self.stopped or step <= self.last_step:
             return
+        self.last_step = step
         value = float(metrics['train/CE loss'])
         reason = None
         if not math.isfinite(value):
             reason = 'Non-finite training CE loss'
         elif step >= self.warmup_steps + 100:
-            self.values = (self.values + [value])[-20:]
-            if len(self.values) == 20:
+            self.values = (self.values + [value])[-self.window_size:]
+            if len(self.values) == self.window_size:
                 median = statistics.median(self.values)
                 self.best = min(self.best, median)
-                self.unhealthy_windows = self.unhealthy_windows + 1 if median > 1.5 * self.best else 0
-                if self.unhealthy_windows >= 20:
-                    reason = 'Sustained median training CE exceeds 1.5 times its best post-warmup median'
+                # Any decrease in the smoothed loss protects recovery, even above the threshold.
+                if median < self.previous_median:
+                    self.last_recovery_step = step
+                self.previous_median = median
+                if median > self.loss_multiple * self.best:
+                    if self.high_since is None:
+                        self.high_since = step
+                    if (step - self.high_since >= self.patience_steps
+                            and step - (self.last_recovery_step or step) >= self.recovery_grace_steps):
+                        reason = 'Median training CE above 2x best for 1000 steps, with no recovery for 500 steps'
+                else:
+                    self.high_since = None
         if reason:
             from scripts.pipeline import write_json
-            record = {'step': step, 'reason': reason, 'loss': value if math.isfinite(value) else None}
+            record = {'step': step, 'reason': reason, 'loss': value if math.isfinite(value) else None,
+                      'policy_version': 2, 'window_size': self.window_size,
+                      'loss_multiple': self.loss_multiple, 'patience_steps': self.patience_steps,
+                      'recovery_grace_steps': self.recovery_grace_steps,
+                      'last_recovery_step': self.last_recovery_step}
             write_json(Path(self.output_dir) / 'health_stop.json', record)
             print('HEALTH_STOP ' + json.dumps(record), flush=True)
+            self.stopped = True
             self.trainer.cancel_run(reason)

@@ -221,6 +221,30 @@ def test_missing_reference_fails(tmp_path):
         pipeline.training_plan(args)
 
 
+def test_resume_requires_checkpoint_and_does_not_change_recipe_or_output(tmp_path,monkeypatch):
+    args=make_meta_fixture(tmp_path,32000,.5,4_000_000)
+    cfg,output=pipeline.training_plan(args)
+    args.resume_latest=True
+    assert pipeline.training_plan(args)==(cfg,output)
+    assert '--resume-latest' in submit.stage_arguments(args)
+    with pytest.raises(ValueError,match='No complete checkpoint'):pipeline.train_model(args)
+    checkpoint=output/'step123'
+    for path in ['.metadata.json','config.json','model_and_optim/.metadata']:
+        p=checkpoint/path;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('{}')
+    with pytest.raises(ValueError,match='Incomplete full-state'):pipeline.train_model(args)
+    for path in [f'train/rank{i}.pt' for i in range(args.gpus)]+['model_and_optim/__0_0.distcp']:
+        p=checkpoint/path;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'fixture')
+    pipeline.write_json(output/'health_stop.json',{'step':123,'reason':'old guard'})
+    def launch(command):
+        assert command[-2:]==['--resume-from',str(checkpoint)]
+        assert not (output/'health_stop.json').exists()
+        assert len(list((output/'health_stop_history').glob('*.json')))==1
+        raise RuntimeError('stop before real torchrun')
+    monkeypatch.setattr(pipeline,'run',launch)
+    with pytest.raises(RuntimeError,match='stop before real torchrun'):pipeline.train_model(args)
+    assert pipeline.read_json(output/'launch_config.json')==cfg
+
+
 def test_uniform_sample_and_cpu_tokenizers(tmp_path):
     full = tmp_path / 'raw_text/250GB/dolma3_250gb.jsonl'
     full.parent.mkdir(parents=True)

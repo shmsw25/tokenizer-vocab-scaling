@@ -88,11 +88,83 @@ def test_loss_health_guard_waits_for_sustained_deterioration(tmp_path):
     from scripts.training_callbacks import LossHealthCallback
     calls=[];cb=LossHealthCallback(str(tmp_path),warmup_steps=10)
     cb.trainer=SimpleNamespace(cancel_run=calls.append)
-    for i in range(40):cb.log_metrics(110+i,{'train/CE loss':2.})
-    cb.log_metrics(160,{'train/CE loss':10.})
+    for step in range(110, 610, 10):cb.log_metrics(step,{'train/CE loss':2.})
+    cb.log_metrics(610,{'train/CE loss':10.})
     assert not calls
-    for i in range(40):cb.log_metrics(161+i,{'train/CE loss':4.})
+    for step in range(620, 1800, 10):cb.log_metrics(step,{'train/CE loss':5.})
+    assert not calls  # Not yet 1000 optimizer steps above threshold.
+    for step in range(1800, 2000, 10):cb.log_metrics(step,{'train/CE loss':5.})
     assert calls and (tmp_path/'health_stop.json').exists()
+
+
+def test_loss_guard_does_not_stop_slow_recovery_or_moderate_spikes(tmp_path):
+    from scripts.training_callbacks import LossHealthCallback
+    calls=[];cb=LossHealthCallback(str(tmp_path),warmup_steps=10)
+    cb.trainer=SimpleNamespace(cancel_run=calls.append)
+    for step in range(110, 610, 10):cb.log_metrics(step,{'train/CE loss':2.})
+    for step in range(610, 2610, 10):cb.log_metrics(step,{'train/CE loss':3.9})
+    assert not calls
+    # Loss remains >2x baseline for far longer than patience, but steadily recovers.
+    for step in range(2610, 6610, 10):
+        cb.log_metrics(step,{'train/CE loss':12 - (step-2610)*.001})
+    assert not calls
+    saved=cb.state_dict();resumed=LossHealthCallback(str(tmp_path),warmup_steps=10)
+    resumed.load_state_dict(saved)
+    assert resumed.best==2. and resumed.values==cb.values
+    resumed.trainer=SimpleNamespace(global_step=6600,cancel_run=calls.append)
+    resumed.pre_train()
+    assert resumed.high_since is None and resumed.last_recovery_step==6600
+
+
+@pytest.mark.parametrize('loss',[float('nan'),float('inf')])
+def test_loss_guard_still_stops_nonfinite_loss(tmp_path,loss):
+    from scripts.training_callbacks import LossHealthCallback
+    calls=[];cb=LossHealthCallback(str(tmp_path),warmup_steps=192)
+    cb.trainer=SimpleNamespace(cancel_run=calls.append)
+    cb.log_metrics(1,{'train/CE loss':loss})
+    assert calls==['Non-finite training CE loss']
+
+
+def test_explicit_larger_pool_lr_search_reuses_runs_and_gates_100gb():
+    s=fixture();study.advance_plan(s)
+    for b in s['study']['brackets'].values():finish(s,b['lower'],.9)
+    study.advance_plan(s)
+    for b in s['study']['brackets'].values():finish(s,b['next'],.95)
+    study.advance_plan(s)
+    old=dict(s['study']['transfers'])
+    s['study']['pool_lr_search']={'pools':['10GB','20GB'],'learning_rates':[.001,.002]}
+    study.advance_plan(s)
+    search=s['study']['pool_lr_search'];keys=[key for pair in search['runs'].values() for key in pair]
+    assert len(keys)==len(set(keys))==36
+    assert {key for key in old.values() if float(study.arg(s['nodes'][key],'--learning-rate')) in (.001,.002)}<=set(keys)
+    assert s['study']['phase']=='pool_lr_search' and 'sample-100gb' not in s['nodes']
+    count=len(s['nodes']);study.advance_plan(s);assert len(s['nodes'])==count
+    for key in keys:
+        finish(s,key,.8 if float(study.arg(s['nodes'][key],'--learning-rate'))==.002 else .9)
+        s['nodes'][study.eval_key(key)]['status']='succeeded'
+    study.advance_plan(s)
+    assert all(choice['lr']==.002 for choice in search['selected'].values())
+    assert s['study']['phase']=='100gb_horizons'
+    # 100GB continues using the 5GB-selected LR; larger-pool tuning is separate.
+    assert all(float(study.arg(s['nodes'][key],'--learning-rate'))==s['study']['selected'][pair]['lr']
+               for pair,key in s['study']['hundred_gb'].items())
+
+
+def test_health_resume_preserves_lr_and_history_and_clears_stale_health():
+    s=fixture();study.advance_plan(s)
+    key=s['study']['brackets']['small:32000']['lower'];node=s['nodes'][key]
+    node.update(status='failed',chain_job_status='failed',receipt={'workload_id':'old'},
+                health_stop={'reason':'old guard'},wandb_final_checked=True)
+    campaign.prepare_chains(s)
+    with pytest.raises(ValueError,match='authorized'):campaign.retry_node(s,key)
+    original_lr=study.arg(node,'--learning-rate')
+    node['arguments'].append('--resume-latest')
+    campaign.retry_node(s,key)
+    assert node['status']=='pending' and 'health_stop' not in node and 'wandb_final_checked' not in node
+    assert node['previous_attempts'][-1]['health_stop']['reason']=='old guard'
+    assert study.arg(node,'--learning-rate')==original_lr
+    assert 'receipt' not in s['nodes'][study.eval_key(key)]
+    assert campaign.ready_nodes(s)[0]==key
 
 
 def test_full_100gb_excludes_shared_holdout_without_touching_parent(tmp_path):

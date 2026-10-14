@@ -76,6 +76,7 @@ def main():
     parser.add_argument('--data-loader', choices=['repack', 'fsl'],
                         help='Default: training.data_loader in config, otherwise repack')
     parser.add_argument('--run-name', help='W&B run name; defaults to the output directory name')
+    parser.add_argument('--resume-from', type=Path, help='Require a full-state checkpoint in this output directory')
     cli = parser.parse_args()
 
     cfg = json.loads(cli.config.read_text())
@@ -184,6 +185,23 @@ def main():
             trainer_cfg.load_optim_state = trainer_cfg.load_trainer_state = True
         trainer = trainer_cfg.build(module, loader)
         trainer.callbacks['config_saver'].config = cfg
+        if cli.resume_from:
+            checkpoint = cli.resume_from.resolve()
+            if checkpoint.parent != output_dir or not checkpoint.name[4:].isdigit():
+                raise ValueError('Resume checkpoint must be a step directory in this run output')
+            trainer.load_checkpoint(checkpoint, load_optim_state=True, load_trainer_state=True)
+            if trainer.global_step != int(checkpoint.name[4:]) or not module.optim.state:
+                raise RuntimeError('Full-state checkpoint restoration failed verification')
+            if get_rank() == 0:
+                from scripts.pipeline import write_json
+                record = {'checkpoint': str(checkpoint), 'step': trainer.global_step,
+                          'epoch': trainer.epoch, 'batches_processed': loader.batches_processed,
+                          'global_train_tokens_seen': trainer.global_train_tokens_seen,
+                          'peak_learning_rate': t['learning_rate'],
+                          'restored_optimizer_lr': module.optim.param_groups[0]['lr'],
+                          'state': ['model', 'optimizer', 'trainer', 'data_loader', 'rng']}
+                write_json(output_dir / 'resume_verified.json', record)
+                print('RESUME_VERIFIED ' + json.dumps(record), flush=True)
         if get_rank() == 0:
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / 'tokenizer.json').write_bytes((data_dir / 'tokenizer.json').read_bytes())

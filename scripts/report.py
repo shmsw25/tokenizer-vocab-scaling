@@ -128,6 +128,8 @@ def build_report_data(state):
                      'batch_size': budget['global_batch_size'],
                      'epoch_fraction': float(argument(node, '--epoch-fraction', 1)),
                      'study_role': node.get('study_role'),
+                     'resume_verified': node.get('resume_verified'),
+                     'previous_attempts': node.get('previous_attempts', []),
                      'wandb_url': node.get('reported_metrics', {}).get('wandb_url'),
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
                      'microbatch': cfg['training']['micro_batch_size'],
@@ -144,14 +146,20 @@ def build_report_data(state):
     selected = []
     for group in groups.values():
         eligible = [r for r in group if r['status'] == 'completed' and r['metrics']['validation_bpb'] is not None]
-        chosen_lr = state.get('study', {}).get('selected', {}).get(f"{group[0]['model']}:{group[0]['vocab']}", {}).get('lr')
+        pool_search = state.get('study', {}).get('pool_lr_search', {})
+        if group[0]['pool'] in pool_search.get('pools', []):
+            # Compare the authorized rates on this pool's validation split only.
+            eligible = [r for r in eligible if r['lr'] in pool_search['learning_rates']]
+            chosen_lr = None
+        else:
+            chosen_lr = state.get('study', {}).get('selected', {}).get(f"{group[0]['model']}:{group[0]['vocab']}", {}).get('lr')
         if chosen_lr is not None:
             eligible = [r for r in eligible if r['lr'] == chosen_lr]
         choice = min(eligible, key=lambda r: (r['metrics']['validation_bpb'], r['id'])) if eligible else group[0] if len(group) == 1 else None
         if choice:
             selected.append(choice['id'])
     pools = state.get('training_pools', ['100GB'])
-    runs.sort(key=lambda r: (pools.index(r['pool']), r['vocab'], MODEL_ORDER.index(r['model']), r['lr'], r['wd'], r['id']))
+    runs.sort(key=lambda r: (pools.index(r['pool']), MODEL_ORDER.index(r['model']), r['vocab'], r['lr'], r['wd'], r['id']))
     vocabs = sorted({n['vocab_size'] for n in nodes.values() if n['stage'] == 'tokenize-data'})
     training_tokens = [{'pool': pool, 'tokens': {
         vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')

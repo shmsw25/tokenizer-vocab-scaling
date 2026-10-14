@@ -139,6 +139,40 @@ def trend_decision(state):
             'decided_at': now()}
 
 
+def advance_pool_lr_search(state, vocabs, required):
+    """Run both authorized rates per larger-pool coordinate, reusing matching runs."""
+    study, nodes = state['study'], state['nodes']
+    search = study['pool_lr_search']
+    ready = True
+    for pool in search['pools']:
+        for model in MODELS:
+            for vocab in vocabs:
+                coordinate = f'{pool}:{model}:{vocab}'
+                keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial')
+                        for lr in search['learning_rates']]
+                search.setdefault('runs', {})[coordinate] = keys
+                for key in keys:
+                    if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled'):
+                        required.discard(eval_key(key))
+                    else:
+                        required.add(eval_key(key))
+                        if nodes[eval_key(key)]['status'] != 'succeeded':
+                            ready = False
+                scores = [(completed_score(nodes[key]), key) for key in keys]
+                if all(score is not None for score, _ in scores):
+                    score, winner = min(scores, key=lambda x: (x[0], x[1]))
+                    if math.isfinite(score):
+                        search.setdefault('selected', {})[coordinate] = dict(
+                            key=winner, lr=float(arg(nodes[winner], '--learning-rate')),
+                            validation_bpb=score, candidates=keys)
+                        study.setdefault('transfers', {})[coordinate] = winner
+                    else:
+                        ready = False
+                else:
+                    ready = False
+    return ready
+
+
 def advance_plan(state):
     study = state.get('study')
     if not study:
@@ -174,14 +208,22 @@ def advance_plan(state):
                     required.add(eval_key(bracket[kind]))
                 elif kind in bracket:
                     required.discard(eval_key(bracket[kind]))
-            if pair not in study['selected']:
+            if pair not in study['selected'] or any(
+                    kind not in bracket or completed_score(nodes[bracket[kind]]) is None
+                    for kind in ('baseline', 'lower', 'next')):
                 all_selected = False
+    if study.get('pool_lr_search'):
+        search_ready = advance_pool_lr_search(state, vocabs, required)
+        study['required'] = sorted(required)
+        if not search_ready or not all_selected:
+            study['phase'] = 'pool_lr_search'
+            return
     study['required'] = sorted(required)
     if not all_selected:
         study['phase'] = 'lr_tuning'
         return
     transfers = study.setdefault('transfers', {})
-    for pool in ('10GB', '20GB'):
+    for pool in (() if study.get('pool_lr_search') else ('10GB', '20GB')):
         for model in MODELS:
             for vocab in vocabs:
                 pair = f'{model}:{vocab}'
