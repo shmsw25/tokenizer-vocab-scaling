@@ -28,7 +28,9 @@ RESOURCES = {
 
 
 def gpu_count(args):
-    return args.gpus if args.stage == 'train-model' else int(args.stage == 'evaluate-model')
+    if args.stage == 'train-model':
+        return args.gpus
+    return int(args.stage == 'evaluate-model' or getattr(args, 'chain_evaluation', False))
 
 
 def runtime_nanoseconds(value):
@@ -64,6 +66,9 @@ def parser():
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
         s.add_argument('--preemptible', action='store_true')
+        if stage in ('train-model', 'convert-model'):
+            s.add_argument('--chain-evaluation', action='store_true',
+                           help='Run conversion and evaluation in the same shell/job after success')
         if stage == 'train-model':
             s.add_argument('--min-runtime', type=minimum_runtime,
                            help='Minimum runtime: defaults to 8h for 32K vocabulary, 0s otherwise')
@@ -133,6 +138,8 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
         'HF_HOME': str(args.root / '.cache/huggingface'),
         'TOKENIZER_CODE_REVISION': revision,
     }
+    if getattr(args, 'chain_evaluation', False):
+        env['TOKENIZER_CHAIN_EVALUATION'] = '1'
     if not gpu_job:
         env['CUDA_VISIBLE_DEVICES'] = ''
     env_vars = [{'name': k, 'value': v} for k, v in env.items()]
@@ -291,7 +298,9 @@ def main():
                            'revision': revision, 'name': name})
             print(b.experiment.url(workload))
             print(f'Code dataset: {dataset.id} (retain for reproducibility)')
-            print('Run the next stage only after this experiment succeeds.')
+            print('Conversion and evaluation run automatically in this same job.'
+                  if getattr(args, 'chain_evaluation', False) else
+                  'Run the next stage only after this experiment succeeds.')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,29 @@
+"""Small log snapshots keep completed stages visible while a chained job runs."""
+import argparse
+import json
+from pathlib import Path
+import time
+
+STAGES = ('train-model', 'convert-model', 'evaluate-model')
+
+
+def snapshot(stage, results=Path('/results')):
+    summaries = {}
+    for name in STAGES:
+        path = results / f'{name}.json'
+        if path.is_file():
+            summaries[name] = json.loads(path.read_text())
+    return {'current_stage': stage, 'summaries': summaries}
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('stage', choices=STAGES)
+    parser.add_argument('--watch', action='store_true')
+    args = parser.parse_args()
+    while True:
+        if args.watch:
+            time.sleep(30)
+        print('PIPELINE_CHAIN ' + json.dumps(snapshot(args.stage), separators=(',', ':')), flush=True)
+        if not args.watch:
+            break

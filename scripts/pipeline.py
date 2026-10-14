@@ -312,6 +312,10 @@ def training_plan(args):
 def train_model(args):
     cfg, output = training_plan(args)
     with lock(args.root, f'model-{args.model_size}-{dataset_name(args)}-{output.name}'):
+        if (output / 'training_summary.json').is_file():
+            model_artifacts(args)  # Check config and final checkpoint before reusing a completed run.
+            print(f'Training already complete: {output}', flush=True)
+            return
         config_path = output / 'launch_config.json'
         if config_path.exists() and read_json(config_path) != cfg:
             raise ValueError('Refusing to resume with a changed config')
@@ -426,6 +430,7 @@ def publish_summary(args):
                     'evaluate-model': 'evaluation'}[args.stage]
         summary.update(read_json(output / f'{filename}_summary.json'))
     if Path('/results').is_dir():
+        write_json(Path('/results') / f'{args.stage}.json', summary)
         write_json(Path('/results/summary.json'), summary)
     return summary
 

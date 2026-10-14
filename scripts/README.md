@@ -295,9 +295,30 @@ python scripts/campaign.py --advance
 python scripts/campaign.py --offline
 ```
 
-The graph contains one original download/sample job, six independent pool
-sampling jobs, 18 tokenizer jobs, nine tokenization jobs, 27 one-epoch training
-jobs, 27 CPU conversions, and 27 evaluations (115 stages).
+The graph contains 115 logical stages, including 27 training, conversion, and
+evaluation triples. New training jobs run each triple in one Beaker job through
+`scripts/run_model.sh`: training must succeed before CPU conversion, which must
+succeed before single-GPU evaluation. The eight-GPU allocation remains reserved
+until the shell finishes. There is no hourly-monitor delay between these stages.
+All model arguments are passed unchanged; conversion temporarily hides CUDA,
+and evaluation sees only the first assigned GPU. Stage summaries are published
+separately, so an evaluation failure does not erase successful training.
+
+For a standalone chained submission, use the usual parameterized command with
+`--chain-evaluation`, for example:
+
+```bash
+python scripts/submit.py train-model --data-size 5GB --vocab-size 64000 \
+  --model-size small --batch-size 128 --learning-rate 2e-3 --chain-evaluation
+```
+
+Existing running training jobs keep their immutable scripts. Their follow-up can
+use `convert-model --chain-evaluation --cluster ai2/jupiter` to perform CPU
+conversion followed by evaluation in one allocation requesting one GPU. Already
+running standalone conversion/evaluation jobs remain independent. The campaign
+claims chained downstream stages before submission and never submits them again
+as separate jobs. Completed training and valid conversion/evaluation artifacts
+are reused on a retry.
 `--migrate-pools` upgrades the old unsubmitted 100GB plan while preserving its
 current download receipt and history; it refuses to discard submitted downstream
 jobs or migrate twice. Do not reinitialize an existing campaign.

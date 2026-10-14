@@ -15,7 +15,7 @@ import subprocess
 import sys
 import urllib.request
 
-from pipeline import (DEFAULT_ROOT, DEFAULT_BATCH_SIZE, EVALS, MODEL_MICROBATCHES, POOL_SIZES, TRAINING_POOLS,
+from pipeline import (DEFAULT_ROOT, DEFAULT_BATCH_SIZE, EVALS, MODEL_STAGES, MODEL_MICROBATCHES, POOL_SIZES, TRAINING_POOLS,
                       RAW_STAGES, REPO, data_size, read_json, write_json)
 
 TERMINAL = {'succeeded', 'failed', 'canceled'}
@@ -55,7 +55,7 @@ def make_nodes(vocabs, models, pools=POOL_SIZES, training_pools=TRAINING_POOLS):
                       'expected_gpus': 8 if stage == 'train-model' else int(stage == 'evaluate-model')}
         if stage == 'train-model':
             nodes[key].update(priority='urgent', placement_clusters=['ai2/jupiter'],
-                              min_runtime='8h' if vocab == 32000 else '0s')
+                              min_runtime='8h' if vocab == 32000 else '0s', chain_evaluation=True)
 
     add('download', 'download-data', [])
     sample_keys = [f'sample-{size_key(pool)}' for pool in pools]
@@ -97,8 +97,58 @@ def ready_nodes(state):
     if state.get('submission_hold'):
         return []
     return [key for key, node in state['nodes'].items()
-            if node['status'] == 'pending' and not node.get('submission_error')
+            if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
+
+
+def prepare_chains(state):
+    """Claim downstream nodes before submission, including ambiguous network outcomes."""
+    nodes = state['nodes']
+    for key, node in nodes.items():
+        if not node.get('chain_evaluation') or node.get('chain_parent'):
+            continue
+        parent = key
+        allocated = node['expected_gpus']
+        for stage in MODEL_STAGES[MODEL_STAGES.index(node['stage']) + 1:]:
+            child_key, child = next((k, n) for k, n in nodes.items()
+                                    if n['stage'] == stage and parent in n['dependencies'])
+            if stage in node.get('chain_detached_stages', []):
+                parent = child_key
+                continue
+            if child.get('receipt') and child.get('chain_parent') != key:
+                raise ValueError(f'Cannot chain already-submitted independent stage {child_key}')
+            child['chain_parent'] = key
+            child['chain_allocation_gpus'] = allocated
+            if node.get('receipt'):
+                child['receipt'] = dict(node['receipt'])
+            parent = child_key
+
+
+def apply_chain_snapshot(state, key, snapshot, workload_status):
+    """Track stage completion separately from the shared job's lifetime."""
+    root = state['nodes'][key]
+    root['chain_snapshot'] = snapshot
+    root['chain_job_status'] = workload_status
+    for child_key, node in state['nodes'].items():
+        if child_key != key and node.get('chain_parent') != key:
+            continue
+        node['receipt'] = dict(root['receipt'])
+        for field in ('job_id', 'job_status', 'hostname', 'assigned_gpus', 'assignment', 'checked_at'):
+            if field in root:
+                node[field] = root[field]
+        summary = snapshot.get('summaries', {}).get(node['stage'])
+        if summary is not None:
+            if summary.get('stage') != node['stage']:
+                raise ValueError('Chained stage summary mismatch')
+            node.update(status='succeeded', summary=summary)
+        elif node['stage'] == snapshot.get('current_stage'):
+            node['status'] = workload_status if workload_status != 'succeeded' else 'failed'
+            if workload_status == 'succeeded':
+                node['monitor_error'] = 'Chained job exited successfully without a required stage summary'
+        else:
+            node['status'] = 'pending'
+        if summary is not None or workload_status != 'succeeded':
+            node.pop('monitor_error', None)
 
 
 def log_progress(lines, stage, total_records=None):
@@ -182,17 +232,20 @@ def record_assignment(node, assignment):
     assigned_gpus = len(assignment.get('gpus', []))
     node['assigned_gpus'] = assigned_gpus
     allow_reservation = node['stage'] in RAW_STAGES or node.get('allow_gpu_reservation', False)
-    if node['expected_gpus'] == 0 and allow_reservation and assigned_gpus:
+    expected = node.get('chain_allocation_gpus', node['expected_gpus'])
+    if expected == 0 and allow_reservation and assigned_gpus:
         node['resource_warning'] = (f'Requested 0 GPUs; Beaker reserved {assigned_gpus}. '
                                     'Job remains CPU-only with CUDA disabled.')
-    elif assigned_gpus != node['expected_gpus']:
-        raise RuntimeError(f"Expected {node['expected_gpus']} GPUs, assigned {assigned_gpus}")
+    elif assigned_gpus != expected:
+        raise RuntimeError(f"Expected {expected} GPUs, assigned {assigned_gpus}")
     else:
         node.pop('resource_warning', None)
 
 
 def placement_arguments(node):
     result = []
+    if node.get('chain_evaluation'):
+        result += ['--chain-evaluation']
     if node.get('priority'):
         result += ['--priority', node['priority']]
     if node.get('min_runtime') is not None:
@@ -210,9 +263,12 @@ def refresh(state, folder):
     from google.protobuf.json_format import MessageToDict
     with Beaker.from_env(default_workspace=state['workspace'], check_for_upgrades=False) as b:
         for key, node in state['nodes'].items():
+            if node.get('chain_parent'):
+                continue  # The owner refreshes every stage from this one job.
             if not node.get('receipt') and not node.get('name'):
                 continue
-            if node['status'] in TERMINAL and (node.get('summary') or key == 'download'):
+            if (node['status'] in TERMINAL and (node.get('summary') or key == 'download')
+                    and (not node.get('chain_evaluation') or node.get('chain_job_status') in TERMINAL)):
                 continue
             try:
                 ref = node.get('receipt', {}).get('workload_id') or f"{state['owner']}/{node['name']}"
@@ -229,6 +285,7 @@ def refresh(state, folder):
                                        'url': b.experiment.url(workload), 'name': node['name']}
                 node.pop('submission_error', None)
                 node['status'] = BeakerWorkloadStatus(workload.status).name
+                workload_status = node['status']
                 node['checked_at'] = now()
                 job = b.workload.get_latest_job(workload)
                 detail = MessageToDict(job)
@@ -243,7 +300,7 @@ def refresh(state, folder):
                     record_assignment(node, assignment)
                 lines = [{'timestamp': line.timestamp.ToJsonString(),
                           'message': line.message.decode(errors='replace')}
-                         for line in b.job.logs(job, tail_lines=160, follow=False)]
+                         for line in b.job.logs(job, tail_lines=2000 if node.get('chain_evaluation') else 160, follow=False)]
                 write_json(folder / 'logs' / f'{key}.json', lines)
                 if node['stage'] == 'train-model':
                     for line in lines:
@@ -261,7 +318,23 @@ def refresh(state, folder):
                 if node['status'] == 'queued':
                     node['progress'] = {'text': node['job_status'].get('failedSchedulingMessage', 'Queued'),
                                         'eta': 'Unknown queue wait'}
-                if node['status'] == 'succeeded' and key != 'download':
+                if node.get('chain_evaluation'):
+                    snapshot = node.get('chain_snapshot', {'current_stage': node['stage'], 'summaries': {}})
+                    for line in lines:
+                        for fragment in line['message'].splitlines():
+                            if fragment.startswith('PIPELINE_CHAIN '):
+                                snapshot = json.loads(fragment[len('PIPELINE_CHAIN '):])
+                    if workload_status == 'succeeded':
+                        dataset = b.workload.get_results(workload)
+                        for stage in MODEL_STAGES[MODEL_STAGES.index(node['stage']):]:
+                            url = b.dataset.get_file_link(dataset, f'{stage}.json')
+                            with urllib.request.urlopen(url, timeout=60) as response:
+                                snapshot['summaries'][stage] = json.loads(response.read(10_000_000))
+                    apply_chain_snapshot(state, key, snapshot, workload_status)
+                    for child_key, child in state['nodes'].items():
+                        if (child_key == key or child.get('chain_parent') == key) and child.get('summary'):
+                            write_json(folder / 'summaries' / f'{child_key}.json', child['summary'])
+                elif node['status'] == 'succeeded' and key != 'download':
                     dataset = b.workload.get_results(workload)
                     url = b.dataset.get_file_link(dataset, 'summary.json')
                     with urllib.request.urlopen(url, timeout=60) as response:
@@ -293,6 +366,7 @@ def submit_ready(state, path):
             node['receipt'] = read_json(receipt_path)
             node['status'] = 'submitted'
             node.pop('submission_error', None)
+            prepare_chains(state)
         except Exception as error:
             node['submission_error'] = f'{type(error).__name__}: {error}'
         write_json(path, state)
@@ -300,6 +374,10 @@ def submit_ready(state, path):
 
 def retry_node(state, key):
     node = state['nodes'][key]
+    if node.get('chain_parent'):
+        owner = state['nodes'][node['chain_parent']]
+        if owner.get('chain_job_status') not in TERMINAL:
+            raise ValueError('Cannot retry a stage while its shared job is still active')
     if (node['status'] == 'pending' and node.get('submission_error')
             and node.get('submission_not_found_at') and not node.get('receipt')):
         # Keep the same deterministic name after a live lookup proved that no
@@ -315,8 +393,26 @@ def retry_node(state, key):
     if sum(attempt.get('kind') not in {'reconfiguration', 'scheduling_change'} for attempt in history) >= 2:
         raise ValueError('Already attempted three times; investigate before creating a new campaign')
     history.append({k: node[k] for k in ('receipt', 'job_status', 'progress') if k in node})
+    if node.get('chain_parent'):
+        owner_key = node.pop('chain_parent')
+        owner = state['nodes'][owner_key]
+        detached = MODEL_STAGES[MODEL_STAGES.index(node['stage']):]
+        owner['chain_detached_stages'] = sorted(set(owner.get('chain_detached_stages', [])) | set(detached))
+        node.pop('chain_allocation_gpus', None)
+        if node['stage'] == 'convert-model':
+            node.update(chain_evaluation=True, expected_gpus=1, placement_clusters=['ai2/jupiter'])
+            node.pop('allow_gpu_reservation', None)
+        for child in state['nodes'].values():
+            if child.get('chain_parent') == owner_key and child['stage'] in detached:
+                if child.get('receipt'):
+                    child.setdefault('previous_attempts', []).append({'receipt': child['receipt'],
+                        'kind': 'reconfiguration', 'reason': 'Retry stopped chain from its failed stage'})
+                for field in ('receipt', 'name', 'chain_parent', 'chain_allocation_gpus'):
+                    child.pop(field, None)
+                child['status'] = 'pending'
     for field in ('receipt', 'job_id', 'job_status', 'progress', 'assignment', 'assigned_gpus',
-                  'monitor_error', 'submission_error', 'summary', 'resource_warning', 'hostname'):
+                  'monitor_error', 'submission_error', 'summary', 'resource_warning', 'hostname',
+                  'chain_snapshot', 'chain_job_status'):
         node.pop(field, None)
     node['status'] = 'pending'
     node['name'] = f"{state['campaign']}-{key.replace('_', '-')}-retry{len(history)}"
@@ -364,6 +460,7 @@ def main():
             write_json(args.state, state)
         else:
             state = read_json(args.state)
+        prepare_chains(state)
         if not args.offline:
             refresh(state, args.state.parent)
         if args.migrate_pools:
