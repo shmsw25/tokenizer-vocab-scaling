@@ -10,6 +10,35 @@ from olmo_core.train.callbacks import Callback, CheckpointerCallback
 
 
 @dataclass
+class RuntimeBatchEvidenceCallback(Callback):
+    """Record memory fit after a real optimizer update, including Adam state."""
+    output_dir: str
+    plan: dict
+    _recorded: bool = False
+
+    def post_step(self):
+        if self._recorded:
+            return
+        import torch
+        from scripts.pipeline import write_json
+        memory = {'rank': get_rank(), 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
+                  'peak_reserved_bytes': torch.cuda.max_memory_reserved(),
+                  'capacity_bytes': torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory}
+        ranks = [None] * self.plan['world_size']
+        torch.distributed.all_gather_object(ranks, memory)
+        record = {'step': self.step, 'plan': self.plan, 'ranks': ranks,
+                  'evidence': 'Completed forward, backward, and optimizer update on every rank'}
+        if get_rank() == 0:
+            write_json(Path(self.output_dir) / 'runtime_batch_verified.json', record)
+            write_json(Path(self.output_dir) / 'runtime_batch_history' /
+                       f'{self.plan["created_at_ns"]}-verified.json', record)
+            if Path('/results').is_dir():
+                write_json(Path('/results/runtime_batch_verified.json'), record)
+            print('RUNTIME_BATCH_VERIFIED ' + json.dumps(record), flush=True)
+        self._recorded = True
+
+
+@dataclass
 class ReportMetricsCallback(Callback):
     """Publish loss observations for the report without changing training."""
     output_dir: str

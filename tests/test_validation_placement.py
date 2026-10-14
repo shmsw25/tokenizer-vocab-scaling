@@ -24,12 +24,13 @@ def test_validation_spec_preserves_one_gpu_weka_and_runtime():
     assert task['resources']['gpuCount'] == 1
     assert task['context']['minRuntime'] == 1_800_000_000_000
     assert task['datasets'][1]['source'] == {'weka': 'oe-training-default'}
-    for stage in ('train-model', 'evaluate-model'):
+    submit.validate_placement(args_for('train-model', '--cluster', 'ai2/jupiter', 'ai2/saturn'))
+    for stage in ('evaluate-model',):
         with pytest.raises(ValueError, match='exactly one'):
             submit.validate_placement(args_for(stage, '--cluster', 'ai2/jupiter', 'ai2/saturn'))
 
 
-def test_every_validation_candidate_is_checked_and_training_stays_h100(monkeypatch):
+def test_every_candidate_is_checked_and_legacy_postprocessing_stays_h100(monkeypatch):
     types = {'jupiter': 'GPU_TYPE_NVIDIA_H100', 'saturn': 'GPU_TYPE_NVIDIA_A100_80GB',
              'neptune': 'GPU_TYPE_NVIDIA_L40S'}
     seen = []
@@ -42,7 +43,8 @@ def test_every_validation_candidate_is_checked_and_training_stays_h100(monkeypat
     submit.verify_gpu_clusters(beaker, args_for('validate-model'), clusters)
     assert seen == ['jupiter', 'saturn', 'neptune']
     with pytest.raises(RuntimeError, match='saturn'):
-        submit.verify_gpu_clusters(beaker, args_for('train-model'), clusters)
+        submit.verify_gpu_clusters(beaker, args_for('evaluate-model'), clusters)
+    submit.verify_gpu_clusters(beaker, args_for('train-model'), clusters)
     types['neptune'] = 'GPU_TYPE_NVIDIA_V100'
     with pytest.raises(RuntimeError, match='neptune'):
         submit.verify_gpu_clusters(beaker, args_for('validate-model'), clusters)

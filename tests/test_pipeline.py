@@ -29,8 +29,8 @@ def test_beaker_resources_and_schema(stage):
     expected_gpus = 8 if stage == 'train-model' else int(stage in ('evaluate-model','validate-model'))
     assert task['resources']['gpuCount'] == expected_gpus
     if stage == 'train-model':
-        assert spec['tasks'][0]['context']['minRuntime'] == '0s'
-        assert task['context']['minRuntime'] == 0  # REST duration is numeric nanoseconds.
+        assert spec['tasks'][0]['context']['minRuntime'] == '3h'
+        assert task['context']['minRuntime'] == 10_800_000_000_000
         assert type(task['context']['minRuntime']) is int
         assert 'preemptible' not in task['context']
     if stage in pipeline.RAW_STAGES:
@@ -40,7 +40,7 @@ def test_beaker_resources_and_schema(stage):
         assert resolved['tasks'][0]['constraints']['cluster'] == ['ai2/ceres', 'ai2/phobos']
         assert resolved['tasks'][0]['resources']['gpuCount'] == 0
     else:
-        assert task['constraints']['cluster'] == (list(submit.VALIDATION_CLUSTERS) if stage == 'validate-model'
+        assert task['constraints']['cluster'] == (list(submit.GPU_CLUSTERS) if stage in ('train-model','validate-model')
                                                  else ['ai2/jupiter' if expected_gpus else 'ai2/phobos'])
     assert task['datasets'][1] == {
         'mountPath': '/oe-training-default', 'source': {'weka': 'oe-training-default'}}
@@ -59,8 +59,7 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
-@pytest.mark.parametrize('vocab,runtime,nanoseconds', [(32000, '8h', 28_800_000_000_000),
-                                                    (64000, '0s', 0), (128000, '0s', 0)])
+@pytest.mark.parametrize('vocab,runtime,nanoseconds', [(v, '3h', 10_800_000_000_000) for v in (32000, 64000, 128000)])
 def test_training_uses_urgent_cluster_placement_and_vocab_minimum_runtime(vocab, runtime, nanoseconds):
     nodes = campaign.make_nodes([32000, 64000, 128000], ['small'])
     node = nodes[f'train-small-5gb-{vocab}']
@@ -68,7 +67,7 @@ def test_training_uses_urgent_cluster_placement_and_vocab_minimum_runtime(vocab,
     pipeline.validate_args(args)
     spec = submit.make_spec(args)
     task = submit.parse_spec(spec).to_json()['tasks'][0]
-    assert task['constraints'] == {'cluster': ['ai2/jupiter']}
+    assert task['constraints'] == {'cluster': list(submit.GPU_CLUSTERS)}
     assert task['resources']['gpuCount'] == 8
     assert spec['tasks'][0]['context']['minRuntime'] == runtime
     assert task['context']['minRuntime'] == nanoseconds
@@ -241,6 +240,8 @@ def test_resume_requires_checkpoint_and_does_not_change_recipe_or_output(tmp_pat
     (checkpoint/'model_and_optim/__1_0.distcp').touch()
     pipeline.write_json(output/'health_stop.json',{'step':123,'reason':'old guard'})
     def launch(command):
+        if str(command[1]).endswith('/scripts/runtime_batch.py'):
+            return
         assert command[-2:]==['--resume-from',str(checkpoint)]
         assert not (output/'health_stop.json').exists()
         assert len(list((output/'health_stop_history').glob('*.json')))==1

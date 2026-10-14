@@ -54,8 +54,9 @@ def make_nodes(vocabs, models, pools=POOL_SIZES, training_pools=TRAINING_POOLS):
                       'vocab_size': vocab, 'model_size': model, 'data_size': pool, 'status': 'pending',
                       'expected_gpus': 8 if stage == 'train-model' else int(stage == 'evaluate-model')}
         if stage == 'train-model':
-            nodes[key].update(priority='urgent', placement_clusters=['ai2/jupiter'],
-                              min_runtime='8h' if vocab == 32000 else '0s', chain_evaluation=True)
+            from runtime_batch import GPU_CLUSTERS
+            nodes[key].update(priority='urgent', placement_clusters=list(GPU_CLUSTERS),
+                              min_runtime='3h', chain_evaluation=True)
 
     add('download', 'download-data', [])
     sample_keys = [f'sample-{size_key(pool)}' for pool in pools]
@@ -176,6 +177,9 @@ def apply_chain_snapshot(state, key, snapshot, workload_status):
     root['chain_job_status'] = workload_status
     if snapshot.get('branch_checkpoints'):
         root['branch_checkpoints'] = snapshot['branch_checkpoints']
+    for field in ('runtime_batch', 'runtime_batch_verified'):
+        if snapshot.get(field):
+            root[field] = snapshot[field]
     for child_key, node in state['nodes'].items():
         if child_key != key and node.get('chain_parent') != key:
             continue
@@ -389,6 +393,8 @@ def refresh(state, folder):
                                     pass  # A truncated log line is not a metric observation.
                             for prefix, field in [('WSD_BRANCH_READY ', 'branch_checkpoints'),
                                                   ('HEALTH_STOP ', 'health_stop'),
+                                                  ('RUNTIME_BATCH_PLAN ', 'runtime_batch'),
+                                                  ('RUNTIME_BATCH_VERIFIED ', 'runtime_batch_verified'),
                                                   ('RESUME_VERIFIED ', 'resume_verified')]:
                                 if fragment.startswith(prefix):
                                     node[field] = json.loads(fragment[len(prefix):])

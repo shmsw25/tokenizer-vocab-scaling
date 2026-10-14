@@ -17,6 +17,11 @@ def snapshot(stage, results=Path('/results')):
     branches = results / 'decay_branches.json'
     if branches.is_file():
         result['branch_checkpoints'] = json.loads(branches.read_text())
+    for field, filename in [('runtime_batch', 'runtime_batch_plan.json'),
+                            ('runtime_batch_verified', 'runtime_batch_verified.json')]:
+        path = results / filename
+        if path.is_file():
+            result[field] = json.loads(path.read_text())
     return result
 
 

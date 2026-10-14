@@ -417,10 +417,14 @@ def train_model(args):
             print('RESUME_REQUEST ' + json.dumps(record), flush=True)
             resume_args = ['--resume-from', str(checkpoint)]
         started = time.monotonic()
+        runtime_plan = output / 'runtime_batch_plan.json'
+        run([sys.executable, REPO / 'scripts/runtime_batch.py', '--config', config_path,
+             '--model-size', args.model_size, '--vocab-size', args.vocab_size, '--output', runtime_plan])
         run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
              f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
              '--data-dir', tokenized_dir(args), '--output-dir', output,
-             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}', *resume_args])
+             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}',
+             '--runtime-batch-plan', runtime_plan, *resume_args])
         checkpoint = latest_checkpoint(output)
         write_json(output / 'training_summary.json', {
             'model_size': args.model_size, 'vocab_size': args.vocab_size, 'data_size': args.data_size,

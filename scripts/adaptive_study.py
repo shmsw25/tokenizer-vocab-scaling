@@ -72,6 +72,7 @@ def token_stream(state, pool, vocab):
 
 def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
               weight_decay=.1, batch_size=128, embedding_weight_decay=None):
+    from runtime_batch import GPU_CLUSTERS
     nodes = state['nodes']
     embedding_wd = weight_decay if embedding_weight_decay is None else embedding_weight_decay
     if not learning_rate_allowed(state, lr):
@@ -136,7 +137,8 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
             min_runtime='3h', priority='urgent', placement_clusters=['ai2/jupiter'],
             study_role=role, epoch_fraction=fraction, study_parent=parent)
         if prefix == 'train':
-            nodes[child].update(chain_evaluation=True, wandb_secret='SEWONM_WANDB_API_KEY')
+            nodes[child].update(chain_evaluation=True, wandb_secret='SEWONM_WANDB_API_KEY',
+                placement_clusters=list(state['study'].get('training_placement_clusters', GPU_CLUSTERS)))
         deps = [child]
     return key
 

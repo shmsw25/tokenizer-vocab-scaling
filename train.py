@@ -35,7 +35,8 @@ from olmo_core.optim import AdamWConfig, OptimGroupOverride, WSD
 from olmo_core.train import Duration, TrainerConfig, prepare_training_environment, teardown_training_environment
 from olmo_core.train.callbacks import ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
 from olmo_core.train.train_module import TransformerDataParallelConfig, TransformerTrainModuleConfig
-from scripts.training_callbacks import LossHealthCallback, ReportMetricsCallback, WSDCheckpointerCallback
+from scripts.training_callbacks import (LossHealthCallback, ReportMetricsCallback,
+                                        RuntimeBatchEvidenceCallback, WSDCheckpointerCallback)
 
 
 def load_meta(data_dir):
@@ -115,9 +116,17 @@ def main():
                         help='Default: training.data_loader in config, otherwise repack')
     parser.add_argument('--run-name', help='W&B run name; defaults to the output directory name')
     parser.add_argument('--resume-from', type=Path, help='Require a full-state checkpoint in this output directory')
+    parser.add_argument('--runtime-batch-plan', type=Path, help='Verified GPU-dependent microbatch plan from the pre-launch script')
     cli = parser.parse_args()
 
     cfg = json.loads(cli.config.read_text())
+    if cli.runtime_batch_plan:
+        from scripts.runtime_batch import apply_plan, cuda_device
+        if cli.micro_batch_size is not None or cli.gradient_accumulation_steps is not None:
+            raise ValueError('Cannot combine a runtime batch plan with manual batching overrides')
+        apply_plan(cfg, json.loads(cli.runtime_batch_plan.read_text()),
+                   int(os.environ.get('WORLD_SIZE', '1')), int(os.environ.get('LOCAL_RANK', '0')),
+                   cuda_device(torch, int(os.environ.get('LOCAL_RANK', '0'))))
     t = cfg['training']
     t['data_loader'] = cli.data_loader or t.get('data_loader', 'repack')
     for key in ('micro_batch_size', 'gradient_accumulation_steps', 'learning_rate', 'max_steps'):
@@ -156,6 +165,8 @@ def main():
     accumulation_steps = t.get('gradient_accumulation_steps', 1)
     # Sequences per optimizer step. EMO splits each rank's share into microbatches.
     global_batch_size = t['micro_batch_size'] * world_size * accumulation_steps
+    if cfg.get('pipeline') and global_batch_size != cfg['pipeline']['global_batch_size']:
+        raise ValueError('Runtime batching changed the canonical global batch size')
     validation_meta = cfg.get('validation', {}).get('meta', meta['eval'])
     validation_path = Path(validation_meta['output']) if cfg.get('validation') else data_dir / 'eval.bin'
     paths = [data_dir / 'train.bin', validation_path]
@@ -216,6 +227,9 @@ def main():
             })
         if t.get('health_check'):
             trainer_cfg.callbacks['loss_health'] = LossHealthCallback(str(output_dir), t['warmup_steps'])
+        if cfg.get('runtime_batch'):
+            trainer_cfg.callbacks['runtime_batch'] = RuntimeBatchEvidenceCallback(
+                str(output_dir), cfg['runtime_batch'])
         if t.get('branch_from'):
             from olmo_core.train import LoadStrategy
             parent = Path(t['branch_from'])
@@ -267,6 +281,9 @@ def main():
                 'sequence_length': seq_length, 'global_batch_size': global_batch_size,
                 'data_loader': t['data_loader'],
                 'optimizer_groups': optimizer_groups,
+                **({'runtime_batch': cfg['runtime_batch'],
+                    'runtime_batch_verified': json.loads((output_dir / 'runtime_batch_verified.json').read_text())}
+                   if cfg.get('runtime_batch') else {}),
                 'pre_decay_checkpoint': json.loads((output_dir / 'pre_decay_checkpoint.json').read_text()),
             })
     finally:

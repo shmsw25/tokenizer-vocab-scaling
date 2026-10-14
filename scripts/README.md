@@ -4,13 +4,15 @@ These scripts submit jobs in `ai2/flex2`. Model workflows run training,
 CPU conversion, and single-GPU evaluation sequentially in **one shell script
 and one Beaker allocation** (`run_model.sh`).
 Download/sample jobs (including each smaller pool) can run on **any accessible cluster with Weka access**;
-other CPU stages default to `ai2/phobos`, and model training uses H100 `ai2/jupiter`.
+other CPU stages default to `ai2/phobos`. Model training can use `ai2/jupiter`
+(H100), `ai2/saturn` (A100 80GB), or `ai2/neptune` (L40S).
 The active campaign now places unstarted CPU stages on `ai2/saturn` or `ai2/neptune`
 at the user's request, because Phobos is full.
 Downloading/sampling, tokenizer training, and tokenization explicitly request
 **zero GPUs**. Beaker may reserve a GPU slot for a zero-GPU download on GPU
 clusters; the campaign records this reservation, while CUDA remains disabled.
-Model training defaults to **eight H100 GPUs on one node**. Submission is asynchronous:
+Model training defaults to **eight GPUs on one node**, with the pre-launch script
+selecting microbatches from the assigned hardware. Submission is asynchronous:
 wait for each prerequisite experiment to **succeed** before submitting its next
 stage. No experiment is submitted by setup or by `--dry-run`.
 
@@ -29,7 +31,8 @@ one 5GB-selected rate to those two pools.
 Completed matching runs are reused, and old pending recipes remain in state
 as superseded plans. Existing running allocations are preserved.
 
-Every new study job requests `minRuntime: 3h`. Admission counts all the owner's
+New study jobs request `minRuntime: 3h`, except standalone validation uses `30m`.
+Admission counts all the owner's
 live and queued Beaker jobs, including retained eight-GPU allocations during
 conversion/evaluation. CPU requests still specify GPU 0; admission conservatively
 budgets up to eight scheduler-reserved GPUs on Weka GPU clusters. Unknown
@@ -335,11 +338,22 @@ then writes the resolved `launch_config.json` before invoking `torchrun`.
 There is no sequence-length override in these submission scripts.
 
 The default is one epoch and 128 global sequences per optimizer step on eight
-H100 GPUs. Per-GPU microbatches are 16 (`small`), 16 (`medium`), and 8
-(`medium_large`), with 1, 1, and 2 accumulation steps respectively. Gradient accumulation is computed as
+GPUs. `scripts/runtime_batch.py` runs before `torchrun`, checks all eight assigned
+devices, and writes an execution plan without changing `launch_config.json` or
+the model path fingerprint. H100 and A100 80GB use the canonical per-GPU
+microbatches: 16 (`small`), 16 (`medium`), and 8 (`medium_large`, or 4 at 128K).
+L40S uses 8, 4, and 2 respectively, or 1 for `medium_large` at 128K.
+Smaller explicitly configured microbatches are preserved. Gradient accumulation is computed as
 `batch_size / (gpus * micro_batch_size)` and must be integral. The medium and medium_large microbatches come from the infinite-compute
 project; small is capped at 16 so eight GPUs fit within global batch 128.
-They are fixed across vocabulary sizes. Peak LR is 2e-3 for small and medium,
+LR, weight decay, loader batches/order, warmup, and decay horizons are unchanged.
+The hardware plan is checked by every rank and saved in checkpoint configs,
+W&B configuration, training summaries, and downloadable report provenance.
+`RUNTIME_BATCH_VERIFIED` records each rank's peak memory after the first real
+optimizer update. Unknown GPU types, insufficient device capacity, or changed
+recipes fail before training. This conservative policy is not an OOM retry loop.
+Different hardware and accumulation order need not produce bit-identical results.
+Peak LR is 2e-3 for small and medium,
 and 1e-3 for medium_large; weight decay remains 0.1.
 Per-GPU memory still depends on model and vocabulary size, so arbitrary large
 values are not guaranteed to fit. LR and weight decay default to the selected
@@ -464,11 +478,11 @@ Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 `--priority`, `--image`, and `--name`. Workspace and cluster can also default
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Model training defaults to `urgent`
 priority; other stages default to `normal`. Model-training jobs default to
-`minRuntime: 8h` for 32K vocabulary and `0s` otherwise. Other stages are non-preemptible
+`minRuntime: 3h` for all vocabulary sizes. Other stages are non-preemptible
 unless `--preemptible` is supplied. CPU scripts expose
-no GPU-count flag and always emit `gpuCount: 0`. Training and chained evaluation submissions
-check H100 availability and use the requested cluster as their placement
-constraint, without a hostname list. The campaign uses `ai2/jupiter` for training;
+no GPU-count flag and always emit `gpuCount: 0`. Training checks that every
+candidate cluster has eight H100, A100 80GB, or L40S GPUs on one node, without a
+hostname list. The campaign allows Jupiter, Saturn, and Neptune for training;
 verify the actual GPU assignment when each job starts. GPU clusters use
 whole GPU slots even for `gpuCount: 0`. Download and raw sampling permit this scheduler
 reservation to broaden placement; the monitor reports requested and assigned
@@ -545,7 +559,8 @@ The controller records this policy in `study.validation_placement_clusters`;
 existing queued allocations must be confirmed canceled before relocation.
 New standalone validation allocations use a 30-minute minimum runtime and the
 all-user 100-GPU admission check. This is a scheduling reservation, not a time
-limit. Training and its chained evaluation stay on Jupiter with a three-hour minimum.
+limit. Training and its chained evaluation retain the same eight-GPU allocation
+on whichever of the three clusters is selected, with a three-hour minimum.
 Validation jobs replace the current
 `evaluation/dolma_bpb.json` and the Dolma entry in `evaluation_summary.json`,
 preserving other benchmarks and keeping old scores only in audit history.

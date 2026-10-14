@@ -136,6 +136,7 @@ def build_report_data(state):
         review_needed = node.get('loss_curve_review', {}).get('status') == 'review_needed'
         if invalid:
             metrics = {name: None for name in metrics}
+        runtime_batch = node.get('runtime_batch') or node.get('summary', {}).get('training', {}).get('runtime_batch') or {}
         runs.append({'id': key, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
                      'model': model, 'training_status': training_status,
                      'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
@@ -153,7 +154,9 @@ def build_report_data(state):
                      'previous_attempts': node.get('previous_attempts', []),
                      'wandb_url': node.get('reported_metrics', {}).get('wandb_url'),
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
-                     'microbatch': cfg['training']['micro_batch_size'],
+                     'microbatch': runtime_batch.get('micro_batch_size', cfg['training']['micro_batch_size']),
+                     'runtime_batch': runtime_batch or None,
+                     'runtime_batch_verified': node.get('runtime_batch_verified', node.get('summary', {}).get('training', {}).get('runtime_batch_verified')),
                      'weight_tying': cfg['model'].get('tie_word_embeddings', False),
                      'embedding_wd': cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay']),
                      'metrics': metrics, 'raw_metrics': raw_metrics, 'loss_observations': losses, 'compute': budget,

@@ -24,7 +24,8 @@ def test_pre_decay_boundary_matches_scheduler(total):
 
 
 @pytest.mark.parametrize('repack', [False, True])
-def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
+@pytest.mark.parametrize('resume_microbatch_tokens', [16, 8])
+def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack, resume_microbatch_tokens):
     from olmo_core.data import NumpyDataLoaderConfig, NumpyFSLDatasetConfig, TokenizerConfig
     from olmo_core.nn.attention import AttentionBackendName
     from olmo_core.nn.transformer import TransformerConfig
@@ -42,12 +43,12 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
             source.writelines(f'{start},{start + 16}\n' for start in range(0, 64, 16))
     output = tmp_path / 'model'
 
-    def build(save_folder=output):
+    def build(save_folder=output, microbatch_tokens=16):
         model = TransformerConfig.llama_like(
             d_model=16, n_layers=1, n_heads=2, vocab_size=128,
             tie_word_embeddings=True, attn_backend=AttentionBackendName.torch).build(init_device='cpu')
         module = TransformerTrainModuleConfig(
-            rank_microbatch_size=16, max_sequence_length=8,
+            rank_microbatch_size=microbatch_tokens, max_sequence_length=8,
             optim=AdamWConfig(lr=0.001, weight_decay=0.1, fused=False),
             scheduler=WSD(warmup=2, decay_fraction=0.3, decay_min_lr=0),
             compile_model=False).build(model, device=torch.device('cpu'))
@@ -94,7 +95,7 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
     assert callback._checkpoints.count(str(checkpoint)) == 1  # interval also equals 7
 
     # Restore actual model/optimizer/dataloader state at the branch point.
-    resumed, _ = build(tmp_path / 'continued')
+    resumed, _ = build(tmp_path / 'continued', resume_microbatch_tokens)
     resumed.load_checkpoint(checkpoint)
     assert resumed.global_step == 7
     assert resumed.data_loader.batches_processed == (3 if repack else 7)
@@ -105,7 +106,10 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
     assert resumed.global_step == 10
     assert resumed.data_loader.batches_processed == trainer.data_loader.batches_processed
     for original, continued in zip(trainer.train_module.model.parameters(), resumed.train_module.model.parameters()):
-        assert torch.equal(original, continued)
+        if resume_microbatch_tokens == 16:
+            assert torch.equal(original, continued)
+        else:
+            torch.testing.assert_close(original, continued, rtol=1e-5, atol=1e-6)
     # Restarting a completed run reconstructs a missing index without deleting the checkpoint.
     record_path.unlink()
     finished, _ = build()

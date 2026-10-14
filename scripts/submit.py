@@ -11,13 +11,14 @@ import tempfile
 import uuid
 
 from pipeline import REPO, STAGES, MODEL_STAGES, RAW_STAGES, add_stage_arguments, validate_args
+from runtime_batch import GPU_CLUSTERS, GPU_TYPES
 
 # Existing ai2/flex2 image, verified by Beaker image lookup on 2026-10-12.
 GPU_IMAGE = '01KAXVQ0YN242MQ9YEQDQQK512'  # tylerr/olmo-core-tch280cu128-2025-11-25
 CPU_IMAGE = 'python:3.12-slim-bookworm'
 WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
-VALIDATION_CLUSTERS = ('ai2/jupiter', 'ai2/saturn', 'ai2/neptune')
-VALIDATION_GPU_TYPES = {'GPU_TYPE_NVIDIA_H100', 'GPU_TYPE_NVIDIA_A100_80GB', 'GPU_TYPE_NVIDIA_L40S'}
+VALIDATION_CLUSTERS = GPU_CLUSTERS
+VALIDATION_GPU_TYPES = GPU_TYPES
 RESOURCES = {
     'download-data': (4, '32 GiB'),
     'prepare-validation': (16, '64 GiB'),
@@ -61,10 +62,10 @@ def parser():
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
         default_cluster = (None if stage in RAW_STAGES else
-                           list(VALIDATION_CLUSTERS) if stage == 'validate-model' else
-                           'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos')
+                           list(GPU_CLUSTERS) if stage in ('train-model', 'validate-model') else
+                           'ai2/jupiter' if stage == 'evaluate-model' else 'ai2/phobos')
         s.add_argument('--cluster', nargs='+', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
-                       help='One or more eligible Weka clusters; GPU stages except validate-model require one cluster')
+                       help='One or more eligible Weka clusters for training or standalone validation')
         s.add_argument('--allow-gpu-reservation', action='store_true',
                        help='Allow CPU jobs on GPU clusters while still requesting zero GPUs')
         s.add_argument('--priority', choices=('low', 'normal', 'high', 'urgent'),
@@ -76,7 +77,7 @@ def parser():
             s.add_argument('--chain-evaluation', action='store_true',
                            help='Run conversion and evaluation in the same shell/job after success')
         s.add_argument('--min-runtime', type=minimum_runtime,
-                       default='30m' if stage == 'validate-model' else None,
+                       default='30m' if stage == 'validate-model' else '3h' if stage == 'train-model' else None,
                        help='Explicit minimum allocation runtime, e.g. 3h')
         s.add_argument('--wandb-secret', help='Beaker secret name for WANDB_API_KEY; never a literal key')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')
@@ -96,14 +97,14 @@ def cluster_names(args):
 
 def validate_placement(args):
     if gpu_count(args) and (not cluster_names(args) or
-                           (args.stage != 'validate-model' and len(cluster_names(args)) != 1)):
-        raise ValueError('GPU stages other than validate-model require exactly one --cluster')
+                           (args.stage not in ('train-model', 'validate-model') and len(cluster_names(args)) != 1)):
+        raise ValueError('GPU stages other than training/validation require exactly one --cluster')
 
 
 def verify_gpu_clusters(beaker, args, clusters):
-    """Check every candidate cluster; only standalone validation allows A100/L40S."""
+    """Check every candidate; training's pre-launch script adapts its batching."""
     from google.protobuf.json_format import MessageToDict
-    allowed = VALIDATION_GPU_TYPES if args.stage == 'validate-model' else {'GPU_TYPE_NVIDIA_H100'}
+    allowed = GPU_TYPES if args.stage in ('train-model', 'validate-model') else {'GPU_TYPE_NVIDIA_H100'}
     for cluster in clusters:
         if not any(MessageToDict(node).get('nodeResources', {}).get('gpuType') in allowed
                    and len(node.node_resources.gpu_ids) >= gpu_count(args)
@@ -186,7 +187,7 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
         # Use the current scheduling field, not the deprecated preemptible flag.
         context = {'priority': args.priority,
                    'minRuntime': args.min_runtime if args.min_runtime is not None else
-                   '8h' if args.vocab_size == 32000 else '0s'}
+                   '3h'}
     elif args.min_runtime is not None:
         context = {'priority': args.priority, 'minRuntime': args.min_runtime}
     return {
