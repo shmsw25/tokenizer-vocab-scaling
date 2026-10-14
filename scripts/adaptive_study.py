@@ -495,7 +495,7 @@ def sync_shared_validation(state):
             '--data-size',n['data_size'],'--vocab-size',str(n['vocab_size']),'--model-directory',directory],
             data_size=n['data_size'],vocab_size=n['vocab_size'],model_size=n['model_size'],
             status='pending',dependencies=[eval_key(key),study['validation_node']],expected_gpus=1,
-            min_runtime='3h',priority='urgent',
+            min_runtime='30m',priority='urgent',
             placement_clusters=list(study.get('validation_placement_clusters', VALIDATION_CLUSTERS)),
             validation_parent=key)
         required.append(vk)

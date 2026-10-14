@@ -543,8 +543,9 @@ same scorer, batch size, precision, and data checks. Each checkpoint has one
 workload eligible for all three clusters, not duplicate jobs on each cluster.
 The controller records this policy in `study.validation_placement_clusters`;
 existing queued allocations must be confirmed canceled before relocation.
-New validation allocations retain the three-hour minimum and the all-user
-100-GPU admission check. Training and its chained evaluation stay on Jupiter.
+New standalone validation allocations use a 30-minute minimum runtime and the
+all-user 100-GPU admission check. This is a scheduling reservation, not a time
+limit. Training and its chained evaluation stay on Jupiter with a three-hour minimum.
 Validation jobs replace the current
 `evaluation/dolma_bpb.json` and the Dolma entry in `evaluation_summary.json`,
 preserving other benchmarks and keeping old scores only in audit history.

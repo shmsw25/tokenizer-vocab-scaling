@@ -76,6 +76,7 @@ def parser():
             s.add_argument('--chain-evaluation', action='store_true',
                            help='Run conversion and evaluation in the same shell/job after success')
         s.add_argument('--min-runtime', type=minimum_runtime,
+                       default='30m' if stage == 'validate-model' else None,
                        help='Explicit minimum allocation runtime, e.g. 3h')
         s.add_argument('--wandb-secret', help='Beaker secret name for WANDB_API_KEY; never a literal key')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')

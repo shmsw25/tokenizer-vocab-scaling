@@ -10,7 +10,7 @@ from test_adaptive_study import fixture
 
 
 def args_for(stage, *extra):
-    base = [stage, '--vocab-size', '32000', '--min-runtime', '3h']
+    base = [stage, '--vocab-size', '32000']
     if stage == 'validate-model':
         base += ['--model-directory', '/oe-training-default/example']
     return submit.parser().parse_args(base + list(extra))
@@ -22,7 +22,7 @@ def test_validation_spec_preserves_one_gpu_weka_and_runtime():
     task = submit.parse_spec(submit.make_spec(args)).to_json()['tasks'][0]
     assert task['constraints'] == {'cluster': ['ai2/jupiter', 'ai2/saturn', 'ai2/neptune']}
     assert task['resources']['gpuCount'] == 1
-    assert task['context']['minRuntime'] == 10_800_000_000_000
+    assert task['context']['minRuntime'] == 1_800_000_000_000
     assert task['datasets'][1]['source'] == {'weka': 'oe-training-default'}
     for stage in ('train-model', 'evaluate-model'):
         with pytest.raises(ValueError, match='exactly one'):
@@ -58,6 +58,7 @@ def test_controller_places_new_validation_without_rewriting_existing_receipts():
     adaptive_study.sync_shared_validation(state)
     node = state['nodes']['validation-small-5gb-32000']
     assert node['placement_clusters'] == ['ai2/saturn', 'ai2/neptune']
+    assert node['min_runtime'] == '30m'
     node.update(status='queued', receipt={'workload_id': 'existing'})
     state['study']['validation_placement_clusters'] = list(submit.VALIDATION_CLUSTERS)
     adaptive_study.sync_shared_validation(state)
