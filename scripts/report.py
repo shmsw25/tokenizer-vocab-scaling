@@ -107,7 +107,7 @@ def build_report_data(state):
                        ('completed', 'running', 'queued', 'planned', 'failed', 'canceled')}})
     runs = []
     for key, node in nodes.items():
-        if node['stage'] != 'train-model':
+        if node['stage'] != 'train-model' or node['status'] == 'canceled':
             continue
         if excluded_run(state, node) or node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
