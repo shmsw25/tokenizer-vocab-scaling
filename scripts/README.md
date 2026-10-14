@@ -392,6 +392,11 @@ running standalone conversion/evaluation jobs remain independent. The campaign
 claims chained downstream stages before submission and never submits them again
 as separate jobs. Completed training and valid conversion/evaluation artifacts
 are reused on a retry.
+Evaluation probes the shared prepared dataset cache offline before contacting
+Hugging Face. BLiMP still requires all 67 subsets. Cache misses serialize Hub
+access across jobs and honor rate-limit retry delays; scoring and benchmark
+contents are unchanged. Retry an evaluation failure from its evaluation node
+after its shared job stops, preserving successful training and conversion.
 `--migrate-pools` upgrades the old unsubmitted 100GB plan while preserving its
 current download receipt and history; it refuses to discard submitted downstream
 jobs or migrate twice. Do not reinitialize an existing campaign.

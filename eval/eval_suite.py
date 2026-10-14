@@ -20,12 +20,15 @@ import random
 import re
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from datasets import config as datasets_config
 from datasets import get_dataset_config_names, load_dataset
+from huggingface_hub import constants as hub_constants
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -257,15 +260,79 @@ def bpb_margin(scores, correct_index):
             / (len(scores) - 1) - scores[correct_index])
 
 
+@contextmanager
+def offline_datasets():
+    """Probe prepared Arrow datasets without making Hub metadata requests."""
+    flags = [(datasets_config, 'HF_DATASETS_OFFLINE'),
+             (datasets_config, 'HF_HUB_OFFLINE'), (hub_constants, 'HF_HUB_OFFLINE')]
+    previous = [(module, key, getattr(module, key)) for module, key in flags]
+    try:
+        for module, key in flags:
+            setattr(module, key, True)
+        yield
+    finally:
+        for module, key, value in previous:
+            setattr(module, key, value)
+
+
+def datasets_offline():
+    return (datasets_config.HF_DATASETS_OFFLINE or datasets_config.HF_HUB_OFFLINE
+            or hub_constants.HF_HUB_OFFLINE)
+
+
+@contextmanager
+def dataset_hub_lock():
+    # Every job shares this Weka cache. Serialize cache misses, not GPU scoring.
+    root = Path(datasets_config.HF_DATASETS_CACHE)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / '.tokenizer_eval_hub.lock').open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def hub_retry(operation):
+    """Honor Hub throttling while allowing nontransient failures to surface."""
+    for attempt in range(4):
+        try:
+            return operation()
+        except Exception as error:
+            response = getattr(error, 'response', None)
+            if attempt == 3 or getattr(response, 'status_code', None) not in (429, 500, 502, 503, 504):
+                raise
+            header = response.headers.get('Retry-After', '')
+            match = re.search(r'Retry after (\d+) seconds', str(error), re.IGNORECASE)
+            delay = float(header) if header.isdigit() else float(match[1]) if match else 30 * 2 ** attempt
+            print(f'Hub temporarily unavailable; retrying in {delay + 2:g}s', flush=True)
+            time.sleep(delay + 2)
+
+
+def load_eval_dataset(*args, **kwargs):
+    """Reuse the exact cached benchmark before considering an online download."""
+    def cached():
+        with offline_datasets():
+            return load_dataset(*args, **kwargs)
+    try:
+        return cached()
+    except (ConnectionError, FileNotFoundError, ValueError):
+        if datasets_offline():
+            raise
+    with dataset_hub_lock():
+        # Another evaluator may have populated this subset while we waited.
+        try:
+            return cached()
+        except (ConnectionError, FileNotFoundError, ValueError):
+            return hub_retry(lambda: load_dataset(*args, **kwargs))
+
+
 def blimp_configs():
-    """Discover all BLiMP subsets, including when the Hub is unavailable."""
-    if datasets_config.HF_DATASETS_OFFLINE:
-        # Offline Hub discovery otherwise returns only the most recently cached subset.
-        cache = Path(datasets_config.HF_DATASETS_CACHE) / 'nyu-mll___blimp'
-        configs = sorted({json.loads(path.read_text())['config_name']
-                          for path in cache.glob('*/*/*/dataset_info.json')})
-    else:
-        configs = sorted(get_dataset_config_names('nyu-mll/blimp'))
+    """Require all 67 subsets, preferring the complete shared local cache."""
+    # Offline Hub discovery otherwise returns only the most recently cached subset.
+    cache = Path(datasets_config.HF_DATASETS_CACHE) / 'nyu-mll___blimp'
+    configs = sorted({json.loads(path.read_text())['config_name']
+                      for path in cache.glob('*/*/*/dataset_info.json')})
+    if len(configs) != 67 and not datasets_offline():
+        with dataset_hub_lock():
+            configs = sorted(hub_retry(lambda: get_dataset_config_names('nyu-mll/blimp')))
     if len(configs) != 67:
         raise ValueError(f'Expected all 67 BLiMP subsets; found {len(configs)}')
     return configs
@@ -278,7 +345,7 @@ def eval_blimp(model, tokenizer):
     margin_sum = 0.0
     configs = blimp_configs()
     for config in tqdm(configs, desc='BLiMP subsets'):
-        dataset = load_dataset('nyu-mll/blimp', config, split='train')
+        dataset = load_eval_dataset('nyu-mll/blimp', config, split='train')
         # Eight pairs per batch bounds the full-vocabulary logits allocation.
         for offset in range(0, len(dataset), 8):
             batch = dataset[offset:offset + 8]
@@ -296,7 +363,7 @@ def eval_blimp(model, tokenizer):
 
 def eval_arc_easy(model, tokenizer):
     """Choose the answer with lowest conditional BPB on the ARC-Easy test split."""
-    dataset = load_dataset('allenai/ai2_arc', 'ARC-Easy', split='test')
+    dataset = load_eval_dataset('allenai/ai2_arc', 'ARC-Easy', split='test')
     correct = total = 0
     margin_sum = 0.0
     for example in tqdm(dataset, desc='ARC-Easy questions'):
@@ -324,7 +391,7 @@ def eval_hellaswag(model, tokenizer):
         text = text.strip().replace(' [title]', '. ')
         return re.sub(r'\[.*?\]', '', text).replace('  ', ' ')
 
-    dataset = load_dataset('Rowan/hellaswag', split='validation')
+    dataset = load_eval_dataset('Rowan/hellaswag', split='validation')
     dataset = dataset.shuffle(seed=42).select(range(min(1000, len(dataset))))
     correct = total = 0
     margin_sum = 0.0
@@ -346,7 +413,7 @@ def eval_hellaswag(model, tokenizer):
 
 def eval_piqa(model, tokenizer):
     """Score a fixed random sample of 1,000 PIQA validation examples."""
-    dataset = load_dataset('baber/piqa', split='validation')
+    dataset = load_eval_dataset('baber/piqa', split='validation')
     dataset = dataset.shuffle(seed=42).select(range(min(1000, len(dataset))))
     correct = total = 0
     margin_sum = 0.0
