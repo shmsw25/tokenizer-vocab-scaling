@@ -27,6 +27,9 @@ def excluded_run(state, node):
 
 
 def completed_score(node):
+    # A suspected infrastructure failure is not evidence against a learning rate.
+    if node.get('failure_investigation', {}).get('status') == 'unresolved':
+        return None
     if node.get('health_stop') and node['status'] in ('failed', 'canceled'):
         return math.inf
     if node['status'] != 'succeeded':

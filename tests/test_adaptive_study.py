@@ -243,6 +243,23 @@ def test_native_nan_failure_is_unhealthy_without_callback_marker():
         campaign.retry_node({'nodes': {'trial': node}}, 'trial')
 
 
+def test_unresolved_environment_failure_cannot_decide_pool_learning_rate():
+    s = fixture()
+    s['study']['pool_lr_search'] = {'pools': ['10GB'], 'learning_rates': [.001, .002]}
+    study.advance_pool_lr_search(s, [32000], set())
+    coordinate = '10GB:medium:32000'
+    failed, healthy = s['study']['pool_lr_search']['runs'][coordinate]
+    finish(s, healthy, .9)
+    s['nodes'][failed].update(status='failed', health_stop={'reason': 'Non-finite loss'},
+        failure_investigation={'status': 'unresolved', 'reason': 'Suspected faulty node'})
+    study.advance_pool_lr_search(s, [32000], set())
+    assert study.completed_score(s['nodes'][failed]) is None
+    assert coordinate not in s['study']['pool_lr_search'].get('selected', {})
+    # A completed investigation can restore ordinary unhealthy-trial handling.
+    s['nodes'][failed]['failure_investigation']['status'] = 'resolved'
+    assert study.completed_score(s['nodes'][failed]) == float('inf')
+
+
 @pytest.mark.parametrize('stage,status,message', [
     ('train-model', 'running', 'RuntimeError: nan loss encountered at step 485'),
     ('train-model', 'succeeded', 'RuntimeError: nan loss encountered at step 485'),
