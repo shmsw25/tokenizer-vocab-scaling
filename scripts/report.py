@@ -60,8 +60,10 @@ def model_compute(model_json, vocab_size, seq_length):
 
 
 def compute_budget(node, cfg, meta, baseline):
+    batch = int(argument(node, '--batch-size', cfg.get('pipeline', {}).get('global_batch_size', DEFAULT_BATCH_SIZE)))
     result = {'train_tokens': meta.get('train', {}).get('tokens'), 'epoch_tokens': None,
-              'epoch_flops': None, 'flops_per_token': None, 'seq_length': None}
+              'epoch_flops': None, 'flops_per_token': None, 'seq_length': None,
+              'global_batch_size': batch}
     if not meta or not baseline:
         return result
     for key in ('data_files', 'seed', 'eval_fraction'):
@@ -74,7 +76,6 @@ def compute_budget(node, cfg, meta, baseline):
     seq = round(4096 * meta['tokens_per_byte'] / baseline['tokens_per_byte'])
     if node.get('summary', {}).get('config') and seq != cfg['seq_length']:
         raise ValueError('Saved training context differs from measured context')
-    batch = int(argument(node, '--batch-size', cfg.get('pipeline', {}).get('global_batch_size', DEFAULT_BATCH_SIZE)))
     tokens_per_step = seq * batch
     epoch_tokens = meta['train']['tokens'] // tokens_per_step * tokens_per_step
     estimate = model_compute(json.dumps(cfg['model'], sort_keys=True), node['vocab_size'], seq)
@@ -119,6 +120,7 @@ def build_report_data(state):
                      'eval_status': display_status(evaluation.get('status', 'pending')),
                      'conversion_status': display_status(conversion.get('status', 'pending')),
                      'lr': cfg['training']['learning_rate'], 'wd': cfg['training']['weight_decay'],
+                     'batch_size': budget['global_batch_size'],
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
                      'microbatch': cfg['training']['micro_batch_size'],
                      'weight_tying': cfg['model'].get('tie_word_embeddings', False),
@@ -175,9 +177,9 @@ def build_figures(data):
                     mode='lines+markers', name=vocab_label(vocab),
                     line={'color': COLORS.get(vocab, '#475569'), 'width': 2},
                     marker={'size': 10, 'symbol': [['circle', 'square', 'diamond'][MODEL_ORDER.index(r['model'])] for r in records]},
-                    customdata=[[r['model'], r['vocab_label'], r['lr'], r['wd'], r['compute']['epoch_tokens']] for r in records],
+                    customdata=[[r['model'], r['vocab_label'], r['lr'], r['wd'], r['compute']['epoch_tokens'], r['batch_size']] for r in records],
                     hovertemplate='%{customdata[0]} · %{customdata[1]}<br>FLOPs %{x:.3e}<br>' + label +
-                    ' %{y:.4f}<br>LR %{customdata[2]} · WD %{customdata[3]}<br>Epoch tokens %{customdata[4]:,}<extra></extra>'))
+                    ' %{y:.4f}<br>LR %{customdata[2]} · WD %{customdata[3]} · BS %{customdata[5]}<br>Epoch tokens %{customdata[4]:,}<extra></extra>'))
             measured = [r['compute']['epoch_flops'] for r in pool_runs if r['compute']['epoch_flops']]
             layout = dict(template='plotly_white', height=330, margin=dict(l=62, r=20, t=24, b=65),
                           font=dict(family='Inter, system-ui, sans-serif', size=11, color='#475569'),
