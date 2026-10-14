@@ -94,11 +94,12 @@ def migrate_pools(state, vocabs, models, pools, training_pools):
 
 
 def ready_nodes(state):
+    from adaptive_study import excluded_run
     if state.get('submission_hold'):
         return []
     ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
-            and not node.get('hold_reason')
+            and not node.get('hold_reason') and not excluded_run(state, node)
             and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
     return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
 
@@ -408,7 +409,10 @@ def submit_ready(state, path, max_submissions=None):
 
 
 def retry_node(state, key):
+    from adaptive_study import excluded_run
     node = state['nodes'][key]
+    if excluded_run(state, node):
+        raise ValueError('Cannot retry a run with a learning rate excluded by the user')
     if node.get('chain_job_status') and node['chain_job_status'] not in TERMINAL:
         raise ValueError('Cannot retry a stage while its shared job is still active')
     if node.get('health_stop') and '--resume-latest' not in node['arguments']:

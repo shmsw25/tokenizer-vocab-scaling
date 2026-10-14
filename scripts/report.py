@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 from pipeline import DEFAULT_BATCH_SIZE, EVALS, REPO
+from adaptive_study import excluded_run
 
 MODEL_ORDER = ['small', 'medium', 'medium_large']
 COLORS = {32000: '#2563eb', 64000: '#8b5cf6', 128000: '#dc681e'}
@@ -106,7 +107,7 @@ def build_report_data(state):
     for key, node in nodes.items():
         if node['stage'] != 'train-model':
             continue
-        if node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
+        if excluded_run(state, node) or node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
         pool, vocab, model = node.get('data_size', '100GB'), node['vocab_size'], node['model_size']
         conversion = next((n for n in nodes.values() if n['stage'] == 'convert-model' and key in n['dependencies']), {})

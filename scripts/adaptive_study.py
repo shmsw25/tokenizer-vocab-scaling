@@ -17,6 +17,15 @@ def arg(node, flag, default=None):
     return values[values.index(flag) + 1] if flag in values else default
 
 
+def learning_rate_allowed(state, lr):
+    return float(lr) not in state.get('study', {}).get('excluded_learning_rates', [])
+
+
+def excluded_run(state, node):
+    lr = arg(node, '--learning-rate', node.get('summary', {}).get('config', {}).get('training', {}).get('learning_rate'))
+    return bool(node.get('lr_excluded') or (lr is not None and not learning_rate_allowed(state, lr)))
+
+
 def completed_score(node):
     if node.get('health_stop') and node['status'] in ('failed', 'canceled'):
         return math.inf
@@ -57,12 +66,14 @@ def token_stream(state, pool, vocab):
 
 def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
     nodes = state['nodes']
+    if not learning_rate_allowed(state, lr):
+        raise ValueError(f'Learning rate {lr:g} was excluded by the user')
     fixed_lr = state['study'].get('fixed_learning_rates', {}).get(model)
     if fixed_lr is not None and lr != fixed_lr:
         raise ValueError(f'{model} uses the user-fixed learning rate {fixed_lr}')
     # Reuse any already-submitted scientifically matching one-epoch run.
     for key, node in nodes.items():
-        if (node['stage'] == 'train-model' and not node.get('legacy_architecture') and node.get('data_size') == pool
+        if (node['stage'] == 'train-model' and not excluded_run(state, node) and not node.get('legacy_architecture') and node.get('data_size') == pool
                 and node.get('model_size') == model and node.get('vocab_size') == vocab
                 and float(arg(node, '--learning-rate', 0)) == lr
                 and float(arg(node, '--epoch-fraction', 1)) == fraction
@@ -198,7 +209,7 @@ def advance_plan(state):
     sync_shared_validation(state)
     nodes = state['nodes']
     vocabs = study['cohorts'][-1]
-    required = set(study['required'])
+    required = {key for key in study['required'] if not excluded_run(state, nodes[key])}
     all_selected = True
     for model in MODELS:
         for vocab in vocabs:
@@ -214,6 +225,10 @@ def advance_plan(state):
                 if score is None or not math.isfinite(score): all_selected = False
                 continue
             bracket = study['brackets'].setdefault(pair, {})
+            if 'next' in bracket and excluded_run(state, nodes[bracket['next']]):
+                bracket['skipped_next_lr'] = float(arg(nodes[bracket.pop('next')], '--learning-rate'))
+            if pair in study['selected'] and excluded_run(state, nodes[study['selected'][pair]['key']]):
+                del study['selected'][pair]
             if 'baseline' not in bracket:
                 lr = study['selected'].get(f'{model}:32000', {}).get('lr',
                     .001 if model == 'medium_large' else .002)
@@ -223,11 +238,15 @@ def advance_plan(state):
             bracket.setdefault('lower', model_run(state, '5GB', model, vocab, lr / 2, role='lr_trial'))
             base_score, lower_score = completed_score(base), completed_score(nodes[bracket['lower']])
             if base_score is not None and lower_score is not None:
-                if 'next' not in bracket:
+                if 'next' not in bracket and 'skipped_next_lr' not in bracket:
                     next_lr = lr / 4 if lower_score < base_score else lr * 2
                     bracket['direction'] = 'lower_again' if lower_score < base_score else 'higher'
-                    bracket['next'] = model_run(state, '5GB', model, vocab, next_lr, role='lr_trial')
-                scores = [(completed_score(nodes[bracket[k]]), bracket[k]) for k in ('baseline', 'lower', 'next')]
+                    if learning_rate_allowed(state, next_lr):
+                        bracket['next'] = model_run(state, '5GB', model, vocab, next_lr, role='lr_trial')
+                    else:
+                        bracket['skipped_next_lr'] = next_lr
+                scores = [(completed_score(nodes[bracket[k]]), bracket[k])
+                          for k in ('baseline', 'lower', 'next') if k in bracket]
                 if all(score is not None for score, _ in scores):
                     score, winner = min(scores, key=lambda x: (x[0], x[1]))
                     if math.isfinite(score):
@@ -238,9 +257,9 @@ def advance_plan(state):
                     required.add(eval_key(bracket[kind]))
                 elif kind in bracket:
                     required.discard(eval_key(bracket[kind]))
-            if pair not in study['selected'] or any(
-                    kind not in bracket or completed_score(nodes[bracket[kind]]) is None
-                    for kind in ('baseline', 'lower', 'next')):
+            if (pair not in study['selected'] or ('next' not in bracket and 'skipped_next_lr' not in bracket)
+                    or any(completed_score(nodes[bracket[kind]]) is None
+                           for kind in ('baseline', 'lower', 'next') if kind in bracket)):
                 all_selected = False
     if study.get('pool_lr_search'):
         search_ready = advance_pool_lr_search(state, vocabs, required)
@@ -388,7 +407,7 @@ def sync_shared_validation(state):
     if not study.get('validation_node'):return
     nodes=state['nodes']; required=[]
     for key,n in list(nodes.items()):
-        if n['stage']!='train-model' or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan':continue
+        if n['stage']!='train-model' or excluded_run(state,n) or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan':continue
         n['shared_validation_required']=True
         vk=key.replace('train-','validation-',1)
         evaluation=nodes.get(eval_key(key),{})
@@ -420,7 +439,8 @@ def sync_shared_validation(state):
         backfill['completed'] = [key for key in backfill['targets'] if nodes[key].get('shared_validation')]
         backfill['skipped_unhealthy'] = [key for key in backfill['targets']
             if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled')]
-        if len(set(backfill['completed'] + backfill['skipped_unhealthy'])) == len(backfill['targets']):
+        backfill['skipped_excluded'] = [key for key in backfill['targets'] if excluded_run(state,nodes[key])]
+        if len(set(backfill['completed'] + backfill['skipped_unhealthy'] + backfill['skipped_excluded'])) == len(backfill['targets']):
             backfill['status'] = 'complete'
             # This file is only the one-time local migration/launch script, never a worker.
             from pathlib import Path
