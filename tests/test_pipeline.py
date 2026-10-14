@@ -349,7 +349,7 @@ def test_campaign_dependencies_retry_and_report(tmp_path):
     report = tmp_path / 'report.html'
     campaign.render_report(state, report)
     assert not state['complete']
-    assert 'In progress' in report.read_text()
+    assert 'In progress' not in report.read_text()  # The compact report omits the overall status box.
     assert 'Dolma BPB' in report.read_text()
     assert '<th>Pool</th>' in report.read_text() and '2.5GB' in report.read_text()
 

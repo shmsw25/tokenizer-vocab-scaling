@@ -74,6 +74,8 @@ def add_stage_arguments(parser, stage):
                             help='Global sequences per optimizer step, independent of GPU count')
         parser.add_argument('--learning-rate', type=positive_float)
         parser.add_argument('--weight-decay', type=float)
+        parser.add_argument('--embedding-weight-decay', type=float,
+                            help='Embedding matrix WD (also the tied output matrix); defaults to --weight-decay')
         parser.add_argument('--epochs', type=positive_int, default=1)
         parser.add_argument('--seed', type=int, default=42)
         parser.add_argument('--max-steps', type=positive_int,
@@ -119,6 +121,9 @@ def validate_args(args):
             raise ValueError('--batch-size must be divisible by --gpus * --micro-batch-size')
         if args.weight_decay is not None and (not math.isfinite(args.weight_decay) or args.weight_decay < 0):
             raise ValueError('--weight-decay must be finite and nonnegative')
+        if args.embedding_weight_decay is not None and (
+                not math.isfinite(args.embedding_weight_decay) or args.embedding_weight_decay < 0):
+            raise ValueError('--embedding-weight-decay must be finite and nonnegative')
 
 
 def dataset_name(args, vocab=None):
@@ -302,6 +307,12 @@ def training_plan(args):
         t['learning_rate'] = args.learning_rate
     if args.weight_decay is not None:
         t['weight_decay'] = args.weight_decay
+    if args.embedding_weight_decay is not None:
+        # Preserve historical fingerprints when embedding WD equals ordinary WD.
+        if args.embedding_weight_decay == t['weight_decay']:
+            t.pop('embedding_weight_decay', None)
+        else:
+            t['embedding_weight_decay'] = args.embedding_weight_decay
     if args.no_compile:
         t['compile'] = False
     # Fixed data warmup from infinite-compute; context matching also matches bytes.
@@ -338,9 +349,12 @@ def training_plan(args):
         validation = validation_metadata(args.root, args.data_size, args.vocab_size)
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
-    # AdamW uses one default parameter group: embeddings receive the same WD.
+    # The explicit embedding override participates in the scientific fingerprint.
     tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
-    tags += '_EmbedWD' if t['weight_decay'] > 0 else ''
+    if 'embedding_weight_decay' in t:
+        tags += f'_EmbedWD{t["embedding_weight_decay"]:g}'
+    elif t['weight_decay'] > 0:
+        tags += '_EmbedWD'
     run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
                 f'seq{seq}_seed{args.seed}{tags}_{fingerprint}')
     output = args.root / 'models' / args.model_size / dataset_name(args) / run_name

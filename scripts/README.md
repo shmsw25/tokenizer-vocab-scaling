@@ -273,15 +273,22 @@ directly; the launcher exposes no alternative scheduler. The context is always
 seq_length = round(4096 * tokens_per_byte(target) / tokens_per_byte(32000))
 ```
 
-Model-training jobs explicitly set Beaker `context.minRuntime: 8h` for 32K vocabulary
-and `0s` for other vocabularies. Override with `--min-runtime`, using an integer
-duration in seconds, minutes, or hours (for example `0s`, `30m`, or `8h`).
+All new adaptive-study jobs explicitly set Beaker `context.minRuntime: 3h`,
+superseding the original vocabulary-dependent runtime policy. The standalone
+launcher accepts `--min-runtime` in seconds, minutes, or hours.
 The REST API receives the equivalent integer number of nanoseconds.
 All three model sizes currently tie input embeddings to the output projection
 (`wt`). AdamW applies the configured weight decay to every trainable parameter,
-including that shared matrix (`EmbedWD` for positive WD).
-Each tag is omitted when its corresponding setting is disabled. Training,
-conversion, and evaluation use the same directory naming.
+including that shared matrix (`EmbedWD` for positive WD), unless
+`--embedding-weight-decay` explicitly overrides its decay. For example,
+`--weight-decay 0.1 --embedding-weight-decay 0` retains WD=0.1 on all other
+parameters and uses WD=0 on the tied embedding/output matrix. The override is
+part of the configuration fingerprint (`EmbedWD0` in the readable directory
+name); historical default fingerprints stay unchanged. Training, conversion,
+and evaluation must pass the same override. The trainer verifies actual
+optimizer membership and decay and writes `optimizer_groups.json` before fitting.
+The report displays EmbedWD alongside LR, WD, and BS in the same coordinate,
+and compares completed variants using shared-validation BPB.
 
 The trainer retains a **full-state pre-decay checkpoint** after step
 `total_steps - round(total_steps * decay_fraction)`, the last full-LR update.

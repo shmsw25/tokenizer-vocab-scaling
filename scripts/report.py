@@ -44,6 +44,8 @@ def run_config(node):
     for key, cast in [('learning_rate', float), ('weight_decay', float), ('epochs', int),
                       ('seed', int), ('micro_batch_size', int)]:
         cfg['training'][key] = cast(argument(node, '--' + key.replace('_', '-'), cfg['training'][key]))
+    cfg['training']['embedding_weight_decay'] = float(argument(node, '--embedding-weight-decay',
+        cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay'])))
     return cfg
 
 
@@ -142,7 +144,7 @@ def build_report_data(state):
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],
                      'microbatch': cfg['training']['micro_batch_size'],
                      'weight_tying': cfg['model'].get('tie_word_embeddings', False),
-                     'embedding_wd': cfg['training']['weight_decay'],
+                     'embedding_wd': cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay']),
                      'metrics': metrics, 'loss_observations': losses, 'compute': budget,
                      'progress': node.get('progress', {}),
                      'error': node.get('monitor_error') or node.get('submission_error'),
@@ -170,7 +172,7 @@ def build_report_data(state):
         if choice:
             selected.append(choice['id'])
     pools = state.get('training_pools', ['100GB'])
-    runs.sort(key=lambda r: (pools.index(r['pool']), MODEL_ORDER.index(r['model']), r['vocab'], r['lr'], r['wd'], r['id']))
+    runs.sort(key=lambda r: (pools.index(r['pool']), MODEL_ORDER.index(r['model']), r['vocab'], r['lr'], r['wd'], r['batch_size'], r['embedding_wd'], r['id']))
     vocabs = sorted({n['vocab_size'] for n in nodes.values() if n['stage'] == 'tokenize-data'})
     training_tokens = [{'pool': pool, 'tokens': {
         vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')
@@ -212,9 +214,9 @@ def build_figures(data, horizon=1.):
                     mode='lines+markers', name=vocab_label(vocab),
                     line={'color': COLORS.get(vocab, '#475569'), 'width': 2},
                     marker={'size': 10, 'symbol': [['circle', 'square', 'diamond'][MODEL_ORDER.index(r['model'])] for r in records]},
-                    customdata=[[r['model'], r['vocab_label'], r['lr'], r['wd'], r['compute']['epoch_tokens'], r['batch_size']] for r in records],
+                    customdata=[[r['model'], r['vocab_label'], r['lr'], r['wd'], r['compute']['epoch_tokens'], r['batch_size'], r['embedding_wd']] for r in records],
                     hovertemplate='%{customdata[0]} · %{customdata[1]}<br>FLOPs %{x:.3e}<br>' + label +
-                    ' %{y:.4f}<br>LR %{customdata[2]} · WD %{customdata[3]} · BS %{customdata[5]}<br>Epoch tokens %{customdata[4]:,}<extra></extra>'))
+                    ' %{y:.4f}<br>LR %{customdata[2]} · WD %{customdata[3]} · BS %{customdata[5]} · EmbedWD %{customdata[6]}<br>Epoch tokens %{customdata[4]:,}<extra></extra>'))
             measured = [r['compute']['epoch_flops'] for r in pool_runs if r['compute']['epoch_flops']]
             layout = dict(template='plotly_white', height=330, margin=dict(l=62, r=20, t=24, b=65),
                           font=dict(family='Inter, system-ui, sans-serif', size=11, color='#475569'),

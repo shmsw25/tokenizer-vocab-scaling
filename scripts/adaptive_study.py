@@ -67,8 +67,10 @@ def token_stream(state, pool, vocab):
     return cpu_node(state, f'tokens-{pool.lower()}-{vocab}', 'tokenize-data', pool, vocab, [bpe])
 
 
-def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
+def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
+              weight_decay=.1, batch_size=128, embedding_weight_decay=None):
     nodes = state['nodes']
+    embedding_wd = weight_decay if embedding_weight_decay is None else embedding_weight_decay
     if not learning_rate_allowed(state, lr):
         raise ValueError(f'Learning rate {lr:g} was excluded by the user')
     fixed_lr = state['study'].get('fixed_learning_rates', {}).get(model)
@@ -80,7 +82,9 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
                 and node.get('model_size') == model and node.get('vocab_size') == vocab
                 and float(arg(node, '--learning-rate', 0)) == lr
                 and float(arg(node, '--epoch-fraction', 1)) == fraction
-                and int(arg(node, '--batch-size', 128)) == 128
+                and int(arg(node, '--batch-size', 128)) == batch_size
+                and float(arg(node, '--weight-decay', .1)) == weight_decay
+                and float(arg(node, '--embedding-weight-decay', arg(node, '--weight-decay', .1))) == embedding_wd
                 and (node.get('receipt') or not node.get('hold_reason'))):
             node.setdefault('study_role', role)
             return key
@@ -89,6 +93,8 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
         suffix += '-prenorm-v2'
     if fraction != 1:
         suffix += f'-ep{fraction:g}'.replace('.', 'p')
+    if weight_decay != .1 or batch_size != 128 or embedding_wd != weight_decay:
+        suffix += f'-wd{weight_decay:g}-bs{batch_size}-embedwd{embedding_wd:g}'.replace('.', 'p')
     key = 'train-' + suffix
     if key in nodes:
         return key
@@ -102,10 +108,14 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
         deps.append(state['study']['architecture_archive_node'])
     micro = 4 if model == 'medium_large' and vocab >= 128000 else 8 if model == 'medium_large' else 16
     common = ['--root', state['study']['root'], '--data-size', pool, '--vocab-size', str(vocab),
-              '--model-size', model, '--gpus', '8', '--batch-size', '128', '--micro-batch-size', str(micro),
+              '--model-size', model, '--gpus', '8', '--batch-size', str(batch_size), '--micro-batch-size', str(micro),
               '--epochs', '1', '--learning-rate', str(lr), '--epoch-fraction', str(fraction),
               '--wandb-project', PROJECT, '--health-check', '--eval-interval',
               '5000' if pool == '100GB' else '250' if pool == '5GB' else '1000']
+    if weight_decay != .1 or embedding_weight_decay is not None:
+        common += ['--weight-decay', str(weight_decay)]
+    if embedding_wd != weight_decay:
+        common += ['--embedding-weight-decay', str(embedding_wd)]
     if state['study'].get('validation_node'):
         common += ['--validation-id', 'dolma100m-v1']
     if pool == '100GB' and fraction == 1:

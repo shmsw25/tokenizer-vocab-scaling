@@ -18,6 +18,7 @@ Uses EMO's OLMo-core training stack; checkpoints are in OLMo-core format.
 """
 import argparse
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ from olmo_core.distributed.utils import get_rank
 from olmo_core.distributed.parallel import DataParallelType
 from olmo_core.nn.attention import AttentionBackendName
 from olmo_core.nn.transformer import TransformerConfig
-from olmo_core.optim import AdamWConfig, WSD
+from olmo_core.optim import AdamWConfig, OptimGroupOverride, WSD
 from olmo_core.train import Duration, TrainerConfig, prepare_training_environment, teardown_training_environment
 from olmo_core.train.callbacks import ConfigSaverCallback, LMEvaluatorCallbackConfig, WandBCallback
 from olmo_core.train.train_module import TransformerDataParallelConfig, TransformerTrainModuleConfig
@@ -42,6 +43,43 @@ def load_meta(data_dir):
     if not meta_path.is_file():
         raise FileNotFoundError(f'{meta_path} is missing; run tokenize_data.py first')
     return json.loads(meta_path.read_text())
+
+
+def optimizer_config(training, *, fused=True):
+    """Override only the embedding matrix; a tied output head shares this parameter."""
+    wd = training['weight_decay']
+    embedding_wd = training.get('embedding_weight_decay', wd)
+    if any(not math.isfinite(value) or value < 0 for value in (wd, embedding_wd)):
+        raise ValueError('Weight decay and embedding weight decay must be finite and nonnegative')
+    overrides = ([OptimGroupOverride(params=['embeddings.weight'],
+                                    opts={'weight_decay': embedding_wd})]
+                 if embedding_wd != wd else None)
+    return AdamWConfig(lr=training['learning_rate'], weight_decay=wd,
+                       group_overrides=overrides, fused=fused)
+
+
+def verify_optimizer_groups(model, optimizer, training):
+    """Check actual optimizer membership before training and retain compact evidence."""
+    embedding = model.embeddings.weight
+    wd = training['weight_decay']
+    embedding_wd = training.get('embedding_weight_decay', wd)
+    seen = set()
+    evidence = []
+    for group in optimizer.param_groups:
+        for parameter in group['params']:
+            if id(parameter) in seen:
+                raise RuntimeError('Parameter appears in multiple optimizer groups')
+            seen.add(id(parameter))
+            expected = embedding_wd if parameter is embedding else wd
+            if group['weight_decay'] != expected:
+                raise RuntimeError('Optimizer weight decay differs from the requested recipe')
+        evidence.append({'weight_decay': group['weight_decay'],
+                         'parameter_tensors': len(group['params']),
+                         'parameters': sum(p.numel() for p in group['params']),
+                         'includes_embedding': any(p is embedding for p in group['params'])})
+    if seen != {id(p) for p in model.parameters() if p.requires_grad}:
+        raise RuntimeError('Optimizer does not cover every trainable parameter exactly once')
+    return evidence
 
 
 def training_dataset(data_dir, meta, *, data_loader='repack', **dataset_kwargs):
@@ -137,7 +175,7 @@ def main():
             dp_config=TransformerDataParallelConfig(name=DataParallelType.ddp) if world_size > 1 else None,
             rank_microbatch_size=t['micro_batch_size'] * seq_length,
             max_sequence_length=seq_length,
-            optim=AdamWConfig(lr=t['learning_rate'], weight_decay=t['weight_decay'], fused=True),
+            optim=optimizer_config(t),
             scheduler=WSD(warmup=t['warmup_steps'],
                           decay_fraction=t['decay_fraction'], decay_min_lr=t['decay_min_lr']),
             max_grad_norm=1.0, compile_model=t['compile'],
@@ -209,6 +247,11 @@ def main():
             (output_dir / 'tokenizer.json').write_bytes((data_dir / 'tokenizer.json').read_bytes())
             print(f'seq_length={seq_length} sequences_per_step={global_batch_size} '
                   f'tokens_per_step={global_batch_size * seq_length}', flush=True)
+        optimizer_groups = verify_optimizer_groups(model, module.optim, t)
+        if get_rank() == 0:
+            from scripts.pipeline import write_json
+            write_json(output_dir / 'optimizer_groups.json', optimizer_groups)
+            print('OPTIMIZER_GROUPS ' + json.dumps(optimizer_groups), flush=True)
         started = time.monotonic()
         trainer.fit()
         if trainer.global_step < trainer.max_steps:
@@ -223,6 +266,7 @@ def main():
                 'latest_metrics': trainer.callbacks['report_metrics'].latest,
                 'sequence_length': seq_length, 'global_batch_size': global_batch_size,
                 'data_loader': t['data_loader'],
+                'optimizer_groups': optimizer_groups,
                 'pre_decay_checkpoint': json.loads((output_dir / 'pre_decay_checkpoint.json').read_text()),
             })
     finally:

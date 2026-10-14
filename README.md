@@ -95,6 +95,10 @@ in the config and omitted from the readable output directory name.
 All configs use tied embeddings, sequence length 4096, AdamW with weight decay
 0.1, 192-step linear warm-up, constant learning rate, linear decay to zero over the
 last 10% of steps, BF16 autocast, and one epoch.
+The pipeline option `--embedding-weight-decay 0` disables decay only on the tied
+embedding/output matrix while preserving ordinary `--weight-decay`. The default
+applies the same decay to both. EmbedWD is a run hyperparameter, displayed beside
+LR, WD, and BS in the existing pool/model/vocabulary report groups.
 
 ### Batch size
 
