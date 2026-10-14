@@ -85,6 +85,7 @@ def test_pool_paths_and_reference_are_specific_to_each_size(tmp_path):
         assert cfg['pipeline']['pool']['data_size'] == size
         outputs.add(output)
         for stage in ('convert-model', 'evaluate-model'):
-            downstream = args_for(stage, '--root', str(tmp_path), '--vocab-size', '64000', '--data-size', size)
+            downstream = args_for(stage, '--root', str(tmp_path), '--vocab-size', '64000', '--data-size', size,
+                                  '--validation-id', 'legacy')
             assert pipeline.training_plan(downstream)[1] == output
     assert len(outputs) == 3

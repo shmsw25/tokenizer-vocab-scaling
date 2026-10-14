@@ -121,6 +121,10 @@ def build_report_data(state):
         for task in EVALS:
             metrics[task] = evaluation.get('summary', {}).get('metrics', {}).get(task, {}).get(
                 'bpb' if task == 'dolma_bpb' else 'accuracy')
+        if state.get('study', {}).get('dolma_validation_id'):
+            # Do not display the old 1000-document score while backfill is pending.
+            shared = node.get('shared_validation') or evaluation.get('summary', {}).get('shared_validation', {})
+            metrics['dolma_bpb'] = shared.get('metrics', {}).get('validation_bpb')
         budget = compute_budget(node, cfg, streams.get((pool, vocab), {}), streams.get((pool, 32000), {}))
         runs.append({'id': key, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
                      'model': model, 'status': display_status(node['status']),
@@ -150,7 +154,10 @@ def build_report_data(state):
     for group in groups.values():
         eligible = [r for r in group if r['status'] == 'completed' and r['metrics']['validation_bpb'] is not None]
         pool_search = state.get('study', {}).get('pool_lr_search', {})
-        if group[0]['pool'] in pool_search.get('pools', []):
+        fixed_lr = state.get('study', {}).get('fixed_learning_rates', {}).get(group[0]['model'])
+        if fixed_lr is not None:
+            chosen_lr = fixed_lr
+        elif group[0]['pool'] in pool_search.get('pools', []):
             # Compare the authorized rates on this pool's validation split only.
             eligible = [r for r in eligible if r['lr'] in pool_search['learning_rates']]
             chosen_lr = None
@@ -174,7 +181,10 @@ def build_report_data(state):
             for label, tokens in row['tokens'].items()}
     return {'tokenizers': counts, 'runs': runs, 'selected': selected, 'pools': pools,
             'training_tokens': training_tokens, 'token_vocab_labels': [vocab_label(v) for v in vocabs],
-            'metric_labels': {k: v[0] for k, v in METRICS.items()},
+            'metric_labels': {k: ('Shared validation Dolma BPB ↓' if k == 'dolma_bpb'
+                and state.get('study', {}).get('dolma_validation_id') else v[0])
+                for k, v in METRICS.items()
+                if k != 'validation_bpb' or not state.get('study', {}).get('dolma_validation_id')},
             'pool_details': [n.get('summary', {}).get('pool', {}) for n in nodes.values() if n['stage'] == 'sample-pool'],
             'complete': state['complete']}
 
@@ -183,6 +193,7 @@ def build_figures(data, horizon=1.):
     import plotly.graph_objects as go
     figures = {}
     for metric, (label, percentage) in METRICS.items():
+        label = data['metric_labels'].get(metric, label)
         figures[metric] = []
         for pool in data['pools']:
             fig = go.Figure()

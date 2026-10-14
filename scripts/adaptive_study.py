@@ -57,6 +57,9 @@ def token_stream(state, pool, vocab):
 
 def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
     nodes = state['nodes']
+    fixed_lr = state['study'].get('fixed_learning_rates', {}).get(model)
+    if fixed_lr is not None and lr != fixed_lr:
+        raise ValueError(f'{model} uses the user-fixed learning rate {fixed_lr}')
     # Reuse any already-submitted scientifically matching one-epoch run.
     for key, node in nodes.items():
         if (node['stage'] == 'train-model' and not node.get('legacy_architecture') and node.get('data_size') == pool
@@ -162,8 +165,9 @@ def advance_pool_lr_search(state, vocabs, required):
         for model in MODELS:
             for vocab in vocabs:
                 coordinate = f'{pool}:{model}:{vocab}'
-                keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial')
-                        for lr in search['learning_rates']]
+                rates = ([study['fixed_learning_rates'][model]]
+                         if model in study.get('fixed_learning_rates', {}) else search['learning_rates'])
+                keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial') for lr in rates]
                 search.setdefault('runs', {})[coordinate] = keys
                 for key in keys:
                     if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled'):
@@ -199,6 +203,16 @@ def advance_plan(state):
     for model in MODELS:
         for vocab in vocabs:
             pair = f'{model}:{vocab}'
+            fixed_lr = study.get('fixed_learning_rates', {}).get(model)
+            if fixed_lr is not None:
+                key = model_run(state, '5GB', model, vocab, fixed_lr, role='fixed_lr')
+                study['brackets'][pair] = {'baseline': key, 'fixed_lr': fixed_lr}
+                score = completed_score(nodes[key])
+                study['selected'][pair] = dict(key=key, lr=fixed_lr, validation_bpb=score,
+                    candidates=[key], selection='fixed_by_user')
+                required.add(eval_key(key))
+                if score is None or not math.isfinite(score): all_selected = False
+                continue
             bracket = study['brackets'].setdefault(pair, {})
             if 'baseline' not in bracket:
                 lr = study['selected'].get(f'{model}:32000', {}).get('lr',
@@ -377,11 +391,20 @@ def sync_shared_validation(state):
         if n['stage']!='train-model' or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan':continue
         n['shared_validation_required']=True
         vk=key.replace('train-','validation-',1)
+        evaluation=nodes.get(eval_key(key),{})
+        shared = evaluation.get('summary', {}).get('shared_validation')
+        if shared and evaluation.get('status') == 'succeeded':
+            n['shared_validation'] = shared
+            continue  # New shells already score the shared corpus in their evaluation stage.
         if vk in nodes:
             required.append(vk)
-            if nodes[vk]['status']=='succeeded':n['shared_validation']=nodes[vk]['summary']
+            if nodes[vk]['status']=='succeeded':
+                n['shared_validation']=nodes[vk]['summary']
+                if study.get('dolma_validation_id'):
+                    from score_validation import dolma_metric
+                    evaluation['summary']['metrics']['dolma_bpb'] = dolma_metric(n['shared_validation'])
+                    evaluation['summary']['shared_validation'] = n['shared_validation']
             continue
-        evaluation=nodes.get(eval_key(key),{})
         if n['status']!='succeeded' or evaluation.get('status')!='succeeded':continue
         directory=n.get('summary',{}).get('model_dir')
         if not directory:continue
@@ -392,3 +415,17 @@ def sync_shared_validation(state):
             min_runtime='3h',priority='urgent',placement_clusters=['ai2/jupiter'],validation_parent=key)
         required.append(vk)
     study['shared_validation_nodes']=required
+    backfill = study.get('validation_backfill')
+    if backfill:
+        backfill['completed'] = [key for key in backfill['targets'] if nodes[key].get('shared_validation')]
+        backfill['skipped_unhealthy'] = [key for key in backfill['targets']
+            if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled')]
+        if len(set(backfill['completed'] + backfill['skipped_unhealthy'])) == len(backfill['targets']):
+            backfill['status'] = 'complete'
+            # This file is only the one-time local migration/launch script, never a worker.
+            from pathlib import Path
+            from pipeline import REPO, digest
+            script = REPO / '.build/validation-replacement/migrate.py'
+            if script.exists() and digest(script) == backfill.get('script_sha256'):
+                script.unlink()
+                backfill['script_deleted_at'] = now()

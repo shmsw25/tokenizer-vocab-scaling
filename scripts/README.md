@@ -503,8 +503,11 @@ All three model configurations now use EMO's `TransformerBlockType.default`
 (pre-norm RMSNorm) and `qk_norm=false`. The previous medium_large architecture
 used reordered norms and QK normalization; its runs are preserved under
 `models/medium_large_old` and excluded from report plots, grid, and LR selection.
-Corrected medium_large runs start from scratch with distinct `prenorm-v2` node
-keys. Tokenizers and training streams are reused. Tied embeddings, embedding WD,
+Corrected medium_large runs start from scratch at the user-fixed LR `1e-03`,
+with distinct `prenorm-v2` node keys. `study.fixed_learning_rates` supersedes
+both its 5GB LR bracket and the larger-pool two-rate search, including later
+100GB horizons and any smaller-vocabulary cohort. Small/medium LR searches
+continue unchanged. Tokenizers and training streams are reused. Tied embeddings, embedding WD,
 model dimensions, WSD, batch size, and the recovery-aware loss guard are retained.
 
 `prepare-validation` creates `validation/dolma100m-v1/documents.jsonl` from the
@@ -520,11 +523,25 @@ validation, not its dataset or tokenizer. Existing training files are unchanged.
 
 The CPU preparation job also writes the initial nine validation streams.
 Future vocabularies/pools use the CPU `tokenize-validation` stage. New training
-passes `--validation-id dolma100m-v1`; this provenance participates in the run
-fingerprint. Already-submitted/resuming jobs keep their original configuration.
-After their existing conversion/evaluation succeeds, one-GPU `validate-model`
-jobs rescore the checkpoints on the common corpus. LR selection waits for these
-shared scores, rather than mixing them with the earlier pool-specific 1% split.
+defaults to `--validation-id dolma100m-v1`; this provenance participates in the
+run fingerprint. Already-submitted/resuming jobs keep their original
+configuration, with explicit `--validation-id legacy` on future retries to
+preserve the exact path and checkpoint configuration. This flag preserves the
+training recipe only: final Dolma evaluation always uses the shared corpus.
+
+The one-time backfill uses one-GPU `validate-model` jobs after each existing
+checkpoint's conversion/evaluation completes. They replace the current
+`evaluation/dolma_bpb.json` and the Dolma entry in `evaluation_summary.json`,
+preserving other benchmarks and keeping old scores only in audit history.
+The controller tracks completion in `study.validation_backfill` and deletes
+the one-time local migration script after all its targets are scored (or
+explicitly excluded as unhealthy, incomplete trials). The reusable scorer is
+part of the permanent pipeline. New training shells automatically score the
+same corpus during `evaluate-model` inside the original allocation; they do
+not submit an extra validation job. LR selection waits for common scores,
+rather than mixing them with the earlier pool-specific 1% split.
 The post-training scorer predicts every token except the first in fixed context
-windows and applies the repository's token-CE-to-byte normalization. The separate
-1000-document Dolma test score in the five-column report remains unchanged.
+windows and applies the repository's token-CE-to-byte normalization. The report
+replaces the old 1000-document Dolma score with this shared validation BPB and
+shows blanks until each replacement is ready. This corpus now supplies both
+the reported Dolma metric and LR selection; it is not an independent test set.

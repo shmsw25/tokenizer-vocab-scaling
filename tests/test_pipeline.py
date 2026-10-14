@@ -156,7 +156,8 @@ def test_download_excludes_only_explicit_allocation_rejections(tmp_path):
 
 
 def make_meta_fixture(tmp_path, vocab, ratio, bytes_per_split, size='100GB'):
-    args = args_for('train-model', '--root', str(tmp_path), '--vocab-size', str(vocab), '--data-size', size)
+    args = args_for('train-model', '--root', str(tmp_path), '--vocab-size', str(vocab), '--data-size', size,
+                    '--validation-id', 'legacy')
     raw = pipeline.raw_file(args)
     raw.parent.mkdir(parents=True, exist_ok=True)
     if not raw.exists():

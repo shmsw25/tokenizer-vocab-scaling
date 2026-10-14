@@ -63,7 +63,9 @@ def add_stage_arguments(parser, stage):
     if stage == 'validate-model':
         parser.add_argument('--model-directory', type=Path, required=True)
     if stage in MODEL_STAGES:
-        parser.add_argument('--validation-id', choices=['dolma100m-v1'])
+        parser.add_argument('--validation-id', choices=['dolma100m-v1', 'legacy'],
+                            default='dolma100m-v1',
+                            help='Shared validation by default; legacy only preserves existing run fingerprints')
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
         parser.add_argument('--gpus', type=positive_int, default=8)
         parser.add_argument('--micro-batch-size', type=positive_int,
@@ -331,7 +333,7 @@ def training_plan(args):
     }
     if pool := pool_provenance(args):
         cfg['pipeline']['pool'] = pool
-    if getattr(args, 'validation_id', None):
+    if getattr(args, 'validation_id', None) not in (None, 'legacy'):
         from validation_data import validation_metadata
         validation = validation_metadata(args.root, args.data_size, args.vocab_size)
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
@@ -471,6 +473,13 @@ def evaluate_model(args):
         pool = pool_provenance(args)
         heldout_args = ['--dolma-heldout-file', pool['heldout_file']] if pool else []
         for name in args.evals:
+            if name == 'dolma_bpb':
+                from types import SimpleNamespace
+                from score_validation import score_validation, replace_dolma_result
+                shared = score_validation(SimpleNamespace(root=args.root, data_size=args.data_size,
+                    vocab_size=args.vocab_size, model_directory=output))
+                metrics[name] = replace_dolma_result(output, shared)
+                continue
             result = directory / f'{name}.json'
             if not result.exists():
                 run([sys.executable, 'eval/eval_suite.py', exported, name,
@@ -484,6 +493,7 @@ def evaluate_model(args):
             'model_size': args.model_size, 'vocab_size': args.vocab_size, 'data_size': args.data_size,
             'checkpoint': str(checkpoint), 'exported': str(exported), 'metrics': metrics,
             'training': read_json(output / 'training_summary.json'),
+            **({'shared_validation': shared} if 'dolma_bpb' in args.evals else {}),
         })
 
 

@@ -7,6 +7,40 @@ from pipeline import digest, read_json, write_json
 from validation_data import VERSION, validation_metadata
 
 
+def dolma_metric(result):
+    """The report and LR selection use the same identified shared-corpus score."""
+    if result['identity']['validation_id'] != VERSION:
+        raise ValueError('Unexpected Dolma validation identity')
+    return dict(eval='dolma_bpb', bpb=result['metrics']['validation_bpb'],
+        model_checkpoint=result['identity']['exported'], validation_id=VERSION,
+        documents_sha256=result['identity']['documents_sha256'],
+        documents=result['documents'], bytes=result['text_bytes'],
+        tokens=result['stream_tokens'], predicted_tokens=result['predicted_tokens'],
+        scoring=result['scoring'])
+
+
+def replace_dolma_result(directory, result):
+    """Replace the current Dolma result without rerunning the other benchmarks."""
+    metric = dolma_metric(result)
+    summary_path = directory / 'evaluation_summary.json'
+    summary = read_json(summary_path) if summary_path.exists() else None
+    if summary is not None and summary['checkpoint'] != result['identity']['checkpoint']:
+        raise ValueError('Evaluation summary points to a different checkpoint')
+    target = directory / 'evaluation' / 'dolma_bpb.json'
+    if target.exists():
+        previous = read_json(target)
+        if previous != metric:
+            # Keep immutable audit evidence outside the current results namespace.
+            history = directory / 'evaluation_history' / f'dolma_{digest(target)}.json'
+            if not history.exists(): write_json(history, previous)
+    write_json(target, metric)
+    if summary is not None:
+        summary['metrics']['dolma_bpb'] = metric
+        summary['shared_validation'] = result
+        write_json(summary_path, summary)
+    return metric
+
+
 def validation_windows(values, seq):
     for start in range(0, len(values)-1, seq):
         yield start, values[start:min(start+seq+1,len(values))]
@@ -59,6 +93,7 @@ def score_validation(args):
     if output.exists():
         result=read_json(output)
         if result['identity']!=identity:raise ValueError('Existing validation score identity changed')
+        replace_dolma_result(directory, result)
         return result
     model=AutoModelForCausalLM.from_pretrained(exported,local_files_only=True,
         torch_dtype=torch.bfloat16,attn_implementation='sdpa').to('cuda').eval()
@@ -72,4 +107,5 @@ def score_validation(args):
         scoring='Repository byte-normalized CE: mean token NLL * stream tokens / raw UTF-8 bytes / ln(2)',
         boundary_policy='Non-overlapping context windows; one lookahead label; all stream tokens except the first are predicted')
     write_json(output,result);print('SHARED_VALIDATION_READY '+json.dumps(result),flush=True)
+    replace_dolma_result(directory, result)
     return result
