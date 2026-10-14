@@ -133,3 +133,7 @@ def test_horizons_release_only_after_checkpoint_and_complete_only_after_all_eval
     study.advance_plan(s)
     branches=[k for k,n in s['nodes'].items() if n['stage']=='train-model' and n.get('study_role')=='100gb_decay_branch']
     assert len(branches)==1 and s['study']['phase']!='complete'
+    # Successful trunks alone cannot silently skip missing fractional checkpoints.
+    for key in s['study']['required']:s['nodes'][key]['status']='succeeded'
+    study.advance_plan(s)
+    assert s['study']['phase']=='100gb_horizons'

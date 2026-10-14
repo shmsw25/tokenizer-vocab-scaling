@@ -209,7 +209,9 @@ def advance_plan(state):
                     required.add(eval_key(key))
     study['required'] = sorted(required)
     trunks_done = all(nodes[eval_key(hundred[f'{m}:{v}'])]['status'] == 'succeeded' for m in MODELS for v in vocabs)
-    if not trunks_done or any(nodes[k]['status'] != 'succeeded' for k in required):
+    branches_published = all({f'{h:g}' for h in HORIZONS} <= set(nodes[hundred[f'{m}:{v}']].get('branch_checkpoints', {}))
+                             for m in MODELS for v in vocabs)
+    if not trunks_done or not branches_published or any(nodes[k]['status'] != 'succeeded' for k in required):
         study['phase'] = '100gb_horizons'
         return
     if study['smaller_vocab_decision'] is None:

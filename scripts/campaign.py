@@ -144,6 +144,10 @@ def apply_chain_snapshot(state, key, snapshot, workload_status):
             if summary.get('stage') != node['stage']:
                 raise ValueError('Chained stage summary mismatch')
             node.update(status='succeeded', summary=summary)
+            if node['stage'] == 'train-model':
+                metrics = summary.get('training', {}).get('latest_metrics', {})
+                if metrics.get('step', 0) >= node.get('reported_metrics', {}).get('step', 0):
+                    node['reported_metrics'] = metrics
         elif node['stage'] == snapshot.get('current_stage'):
             node['status'] = workload_status if workload_status != 'succeeded' else 'failed'
             if workload_status == 'succeeded':
