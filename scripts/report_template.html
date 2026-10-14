@@ -28,10 +28,6 @@ label{font-size:12px;color:var(--muted)}.filters{display:flex;flex-wrap:wrap;ali
 </style>
 </head><body><main>
 <h1>Tokenizer vocabulary study</h1>
-<section id="tokenizer-summary">
-<div class="section-head"><h2>Tokenizers <span class="count-heading" id="tokenizer-total"></span></h2></div>
-<div class="table-wrap summary"><table><thead><tr><th>Pool</th><th>Total</th><th>Finished</th><th>In progress</th><th>Queued</th><th>Planned</th><th>Failed / canceled</th></tr></thead><tbody id="tokenizer-counts"></tbody><tfoot id="tokenizer-totals"></tfoot></table></div>
-</section>
 <section>
 <div class="section-head"><h2>Training compute and evaluation</h2><label id="horizon-control" hidden>100GB horizon <select id="horizon"><option value="1">1 epoch</option><option value="0.05">0.05 epoch</option><option value="0.1">0.1 epoch</option><option value="0.2">0.2 epoch</option><option value="0.4">0.4 epoch</option></select></label><label>Metric <select id="metric" aria-label="Plot metric"></select></label></div>
 <div class="legend"><span><i class="swatch" style="background:#2563eb"></i>32K</span><span><i class="swatch" style="background:#8b5cf6"></i>64K</span><span><i class="swatch" style="background:#dc681e"></i>128K</span><span class="model-key">● small &nbsp; ■ medium &nbsp; ◆ medium_large</span></div>
@@ -68,11 +64,6 @@ const lrLabel=x=>{if(x==null)return '—';const [m,e]=Number(x).toExponential().
 const badge=s=>`<span class="status ${esc(s)}">${esc(s)}</span>`;
 const link=(url,label)=>url?`<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`:esc(label);
 const selected=new Set(data.selected);
-const totals={total:0,completed:0,running:0,queued:0,planned:0,failed:0,canceled:0};
-function countCells(row){return [row.total,row.completed,row.running,row.queued,row.planned,`${row.failed} / ${row.canceled}`].map(x=>`<td>${x}</td>`).join('');}
-$('tokenizer-counts').innerHTML=data.tokenizers.map(row=>{Object.keys(totals).forEach(k=>totals[k]+=row[k]);return `<tr><td>${esc(row.pool)}</td>${countCells(row)}</tr>`;}).join('');
-$('tokenizer-totals').innerHTML=`<tr><td>All pools</td>${countCells(totals)}</tr>`;
-$('tokenizer-total').textContent=`${totals.total} total across ${data.tokenizers.length} pools`;
 $('metric').innerHTML=Object.entries(data.metric_labels).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('');
 $('metric').value='dolma_bpb';
 $('charts').innerHTML=data.pools.map((p,i)=>`<article class="chart"><h3>${esc(p)}</h3><div class="plot" id="plot-${i}" aria-label="${esc(p)} training FLOPs plot"></div></article>`).join('');
