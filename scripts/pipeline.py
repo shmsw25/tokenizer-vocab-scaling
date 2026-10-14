@@ -21,10 +21,10 @@ WARMUP_SEQUENCES = 24 * 1024
 DEFAULT_BATCH_SIZE = 128
 MODEL_MICROBATCHES = {'small': 16, 'medium': 16, 'medium_large': 8}
 MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
-RAW_STAGES = ('download-data', 'sample-pool')
+RAW_STAGES = ('download-data', 'sample-pool', 'prepare-validation')
 POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
 TRAINING_POOLS = ('5GB', '10GB', '20GB')
-STAGES = (*RAW_STAGES, 'train-tokenizer', 'tokenize-data', *MODEL_STAGES)
+STAGES = (*RAW_STAGES, 'train-tokenizer', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
 EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
@@ -57,10 +57,13 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--data-size', required=True, type=data_size)
         parser.add_argument('--sampling-seed', type=int, default=42,
                             help='Base seed; a distinct deterministic seed is derived for each size')
-    elif stage != 'download-data':
+    elif stage not in ('download-data', 'prepare-validation'):
         parser.add_argument('--vocab-size', required=True, type=positive_int)
         parser.add_argument('--data-size', type=data_size, default='100GB')
+    if stage == 'validate-model':
+        parser.add_argument('--model-directory', type=Path, required=True)
     if stage in MODEL_STAGES:
+        parser.add_argument('--validation-id', choices=['dolma100m-v1'])
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
         parser.add_argument('--gpus', type=positive_int, default=8)
         parser.add_argument('--micro-batch-size', type=positive_int,
@@ -89,7 +92,7 @@ def add_stage_arguments(parser, stage):
 def validate_args(args):
     if not args.root.is_absolute():
         raise ValueError('--root must be absolute')
-    if args.stage == 'download-data':
+    if args.stage in ('download-data', 'prepare-validation'):
         return
     if args.stage == 'sample-pool':
         if Decimal(args.data_size[:-2]) > 100:
@@ -328,6 +331,10 @@ def training_plan(args):
     }
     if pool := pool_provenance(args):
         cfg['pipeline']['pool'] = pool
+    if getattr(args, 'validation_id', None):
+        from validation_data import validation_metadata
+        validation = validation_metadata(args.root, args.data_size, args.vocab_size)
+        cfg['validation'] = {'id': args.validation_id, 'meta': validation}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
     # AdamW uses one default parameter group: embeddings receive the same WD.
     tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
@@ -485,10 +492,21 @@ def publish_summary(args):
     summary = {'stage': args.stage, 'revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
     if args.stage == 'download-data':
         summary['data'] = read_json(args.root / 'raw_text/provenance.json')
+    elif args.stage == 'validate-model':
+        from validation_data import VERSION
+        summary.update(read_json(args.model_directory / f'validation_{VERSION}.json'))
+    elif args.stage == 'prepare-validation':
+        from validation_data import validation_root
+        folder = validation_root(args.root)
+        summary['validation'] = read_json(folder / 'manifest.json')
+        summary['streams'] = {str(p.parent.name): read_json(p) for p in (folder/'tokenized').glob('*/meta.json')}
     elif args.stage == 'sample-pool':
         summary['pool'] = pool_provenance(args)
     elif args.stage == 'train-tokenizer':
         summary['tokenizer'] = read_json(tokenizer_file(args).with_name('pipeline.json'))
+    elif args.stage == 'tokenize-validation':
+        from validation_data import validation_metadata
+        summary['validation'] = validation_metadata(args.root, args.data_size, args.vocab_size)
     elif args.stage == 'tokenize-data':
         summary['meta'] = completed_meta(tokenized_dir(args), args.vocab_size)
     else:
@@ -527,7 +545,9 @@ def main():
     args = parser.parse_args()
     validate_args(args)
     args.root.mkdir(parents=True, exist_ok=True)
-    {'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
+    from validation_data import prepare_validation, tokenize_validation
+    from score_validation import score_validation
+    {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
      'tokenize-data': tokenize_data, 'train-model': train_model,
      'convert-model': convert_model, 'evaluate-model': evaluate_model}[args.stage](args)
     publish_summary(args)

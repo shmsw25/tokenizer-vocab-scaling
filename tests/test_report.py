@@ -98,3 +98,12 @@ def test_loss_metrics_keep_latest_observation_and_resume(tmp_path):
     resumed = ReportMetricsCallback(str(tmp_path), .25, .2)
     resumed.pre_train()
     assert resumed.latest == saved
+
+
+def test_legacy_medium_large_results_are_excluded():
+    state=state_fixture()
+    for node in state['nodes'].values():
+        if node.get('model_size')=='medium_large':node['legacy_architecture']=True
+    data=report.build_report_data(state)
+    assert not any(r['model']=='medium_large' for r in data['runs'])
+    assert any(r['model']=='medium' for r in data['runs'])

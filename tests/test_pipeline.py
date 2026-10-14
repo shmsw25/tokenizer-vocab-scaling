@@ -18,14 +18,15 @@ def args_for(stage, *extra):
 
 @pytest.mark.parametrize('stage', pipeline.STAGES)
 def test_beaker_resources_and_schema(stage):
-    extra = ([] if stage == 'download-data' else ['--data-size', '2.5GB']
+    extra = ([] if stage in ('download-data','prepare-validation') else ['--data-size', '2.5GB']
              if stage == 'sample-pool' else ['--vocab-size', '48000'])
+    if stage == 'validate-model':extra += ['--model-directory','/models/example']
     args = args_for(stage, *extra)
     pipeline.validate_args(args)
     spec = submit.make_spec(args)
     parsed = submit.parse_spec(spec).to_json()
     task = parsed['tasks'][0]
-    expected_gpus = 8 if stage == 'train-model' else int(stage == 'evaluate-model')
+    expected_gpus = 8 if stage == 'train-model' else int(stage in ('evaluate-model','validate-model'))
     assert task['resources']['gpuCount'] == expected_gpus
     if stage == 'train-model':
         assert spec['tasks'][0]['context']['minRuntime'] == '0s'
@@ -45,7 +46,7 @@ def test_beaker_resources_and_schema(stage):
     assert task['arguments'][:3] == [stage, '--root', pipeline.DEFAULT_ROOT]
     if stage == 'sample-pool':
         assert task['arguments'][3:] == ['--data-size', '2.5GB', '--sampling-seed', '42']
-    elif stage != 'download-data':
+    elif stage not in ('download-data','prepare-validation'):
         assert task['arguments'][3:7] == ['--vocab-size', '48000', '--data-size', '100GB']
     assert '--seq-length' not in task['arguments']
 

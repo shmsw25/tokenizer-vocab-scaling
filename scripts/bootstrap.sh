@@ -8,7 +8,7 @@ cd "$task_dir"
 python3 -m venv --system-site-packages "$task_dir/.venv"
 source "$task_dir/.venv/bin/activate"
 mode=cpu
-case "$1" in train-model|convert-model|evaluate-model) mode=train ;; esac
+case "$1" in train-model|convert-model|evaluate-model|validate-model) mode=train ;; esac
 bash setup_env.sh "$mode"
 if [[ "${TOKENIZER_CHAIN_EVALUATION:-0}" == 1 ]]; then
     exec bash scripts/run_model.sh "$@"

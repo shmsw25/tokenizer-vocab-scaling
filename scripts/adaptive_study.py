@@ -22,7 +22,10 @@ def completed_score(node):
         return math.inf
     if node['status'] != 'succeeded':
         return None
-    value = node.get('summary', {}).get('training', {}).get('latest_metrics', {}).get('validation_bpb')
+    if node.get('shared_validation_required'):
+        value = node.get('shared_validation', {}).get('metrics', {}).get('validation_bpb')
+    else:
+        value = node.get('summary', {}).get('training', {}).get('latest_metrics', {}).get('validation_bpb')
     return value if value is not None and math.isfinite(value) else None
 
 
@@ -56,7 +59,7 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
     nodes = state['nodes']
     # Reuse any already-submitted scientifically matching one-epoch run.
     for key, node in nodes.items():
-        if (node['stage'] == 'train-model' and node.get('data_size') == pool
+        if (node['stage'] == 'train-model' and not node.get('legacy_architecture') and node.get('data_size') == pool
                 and node.get('model_size') == model and node.get('vocab_size') == vocab
                 and float(arg(node, '--learning-rate', 0)) == lr
                 and float(arg(node, '--epoch-fraction', 1)) == fraction
@@ -65,18 +68,29 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None):
             node.setdefault('study_role', role)
             return key
     suffix = f'{model}-{pool.lower()}-{vocab}-lr{lr:.8g}'.replace('.', 'p')
+    if state['study'].get('architecture_revision') and model == 'medium_large':
+        suffix += '-prenorm-v2'
     if fraction != 1:
         suffix += f'-ep{fraction:g}'.replace('.', 'p')
     key = 'train-' + suffix
     if key in nodes:
         return key
     deps = sorted({token_stream(state, pool, vocab), token_stream(state, pool, 32000)})
+    if state['study'].get('validation_node'):
+        deps.append(state['study']['validation_node'])
+        if pool not in ('5GB', '10GB', '20GB') or vocab not in (32000, 64000, 128000):
+            deps.append(cpu_node(state, f'validation-tokens-{pool.lower()}-{vocab}',
+                'tokenize-validation', pool, vocab, [token_stream(state, pool, vocab), state['study']['validation_node']]))
+    if model == 'medium_large' and state['study'].get('architecture_archive_node'):
+        deps.append(state['study']['architecture_archive_node'])
     micro = 4 if model == 'medium_large' and vocab >= 128000 else 8 if model == 'medium_large' else 16
     common = ['--root', state['study']['root'], '--data-size', pool, '--vocab-size', str(vocab),
               '--model-size', model, '--gpus', '8', '--batch-size', '128', '--micro-batch-size', str(micro),
               '--epochs', '1', '--learning-rate', str(lr), '--epoch-fraction', str(fraction),
               '--wandb-project', PROJECT, '--health-check', '--eval-interval',
               '5000' if pool == '100GB' else '250' if pool == '5GB' else '1000']
+    if state['study'].get('validation_node'):
+        common += ['--validation-id', 'dolma100m-v1']
     if pool == '100GB' and fraction == 1:
         common += ['--decay-horizons', *map(str, HORIZONS)]
     if parent:
@@ -177,6 +191,7 @@ def advance_plan(state):
     study = state.get('study')
     if not study:
         return
+    sync_shared_validation(state)
     nodes = state['nodes']
     vocabs = study['cohorts'][-1]
     required = set(study['required'])
@@ -186,7 +201,8 @@ def advance_plan(state):
             pair = f'{model}:{vocab}'
             bracket = study['brackets'].setdefault(pair, {})
             if 'baseline' not in bracket:
-                lr = study['selected'][f'{model}:32000']['lr']
+                lr = study['selected'].get(f'{model}:32000', {}).get('lr',
+                    .001 if model == 'medium_large' else .002)
                 bracket['baseline'] = model_run(state, '5GB', model, vocab, lr, role='lr_baseline')
             base = nodes[bracket['baseline']]
             lr = float(arg(base, '--learning-rate'))
@@ -263,6 +279,9 @@ def advance_plan(state):
             study['phase'] = 'smaller_vocab_lr_tuning'
             advance_plan(state)
             return
+    if any(nodes[k]['status'] != 'succeeded' for k in study.get('shared_validation_nodes', [])):
+        study['phase'] = 'shared_validation'
+        return
     study['phase'] = 'complete'
 
 
@@ -347,3 +366,29 @@ def monitor_wandb(state):
     except Exception as error:
         # Do not serialize exception text: auth failures may include sensitive request details.
         state['wandb_monitor_error'] = type(error).__name__ + ': W&B query failed; Beaker loss logs and in-job health guard remain available'
+
+
+def sync_shared_validation(state):
+    """Rescore old and new completed models before comparing validation losses."""
+    study=state['study']
+    if not study.get('validation_node'):return
+    nodes=state['nodes']; required=[]
+    for key,n in list(nodes.items()):
+        if n['stage']!='train-model' or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan':continue
+        n['shared_validation_required']=True
+        vk=key.replace('train-','validation-',1)
+        if vk in nodes:
+            required.append(vk)
+            if nodes[vk]['status']=='succeeded':n['shared_validation']=nodes[vk]['summary']
+            continue
+        evaluation=nodes.get(eval_key(key),{})
+        if n['status']!='succeeded' or evaluation.get('status')!='succeeded':continue
+        directory=n.get('summary',{}).get('model_dir')
+        if not directory:continue
+        nodes[vk]=dict(stage='validate-model',arguments=['validate-model','--root',study['root'],
+            '--data-size',n['data_size'],'--vocab-size',str(n['vocab_size']),'--model-directory',directory],
+            data_size=n['data_size'],vocab_size=n['vocab_size'],model_size=n['model_size'],
+            status='pending',dependencies=[eval_key(key),study['validation_node']],expected_gpus=1,
+            min_runtime='3h',priority='urgent',placement_clusters=['ai2/jupiter'],validation_parent=key)
+        required.append(vk)
+    study['shared_validation_nodes']=required

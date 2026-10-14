@@ -18,9 +18,12 @@ CPU_IMAGE = 'python:3.12-slim-bookworm'
 WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
 RESOURCES = {
     'download-data': (4, '32 GiB'),
+    'prepare-validation': (16, '64 GiB'),
+    'validate-model': (8, '64 GiB'),
     'sample-pool': (4, '32 GiB'),
     'train-tokenizer': (64, '128 GiB'),
     'tokenize-data': (16, '64 GiB'),
+    'tokenize-validation': (16, '64 GiB'),
     'train-model': (32, '256 GiB'),
     'convert-model': (8, '64 GiB'),
     'evaluate-model': (8, '64 GiB'),
@@ -30,7 +33,7 @@ RESOURCES = {
 def gpu_count(args):
     if args.stage == 'train-model':
         return args.gpus
-    return int(args.stage == 'evaluate-model' or getattr(args, 'chain_evaluation', False))
+    return int(args.stage in ('evaluate-model', 'validate-model') or getattr(args, 'chain_evaluation', False))
 
 
 def runtime_nanoseconds(value):
@@ -56,7 +59,7 @@ def parser():
         add_stage_arguments(s, stage)
         s.add_argument('--workspace', default=os.environ.get('BEAKER_WORKSPACE', 'ai2/flex2'))
         default_cluster = (None if stage in RAW_STAGES else
-                           'ai2/jupiter' if stage in ('train-model', 'evaluate-model') else 'ai2/phobos')
+                           'ai2/jupiter' if stage in ('train-model', 'evaluate-model', 'validate-model') else 'ai2/phobos')
         s.add_argument('--cluster', nargs='+', default=os.environ.get('BEAKER_CLUSTER', default_cluster),
                        help='One or more eligible Weka clusters; GPU stages require one cluster')
         s.add_argument('--allow-gpu-reservation', action='store_true',
@@ -73,7 +76,7 @@ def parser():
                        help='Explicit minimum allocation runtime, e.g. 3h')
         s.add_argument('--wandb-secret', help='Beaker secret name for WANDB_API_KEY; never a literal key')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')
-        s.add_argument('--image', default=GPU_IMAGE if stage in MODEL_STAGES else CPU_IMAGE,
+        s.add_argument('--image', default=GPU_IMAGE if stage in (*MODEL_STAGES, 'validate-model') else CPU_IMAGE,
                        help='Beaker image ID for training; Docker image for CPU stages')
         s.add_argument('--hf-token-secret', help='Optional Beaker secret name to expose as HF_TOKEN')
         s.add_argument('--dry-run', action='store_true', help='Print JSON; no upload or job submission')
@@ -91,10 +94,10 @@ def stage_arguments(args):
     result = [args.stage, '--root', str(args.root)]
     if args.stage == 'sample-pool':
         result += ['--data-size', args.data_size, '--sampling-seed', str(args.sampling_seed)]
-    elif args.stage != 'download-data':
+    elif args.stage not in ('download-data', 'prepare-validation'):
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
     if args.stage in MODEL_STAGES:
-        for name in ('model_size', 'gpus', 'micro_batch_size', 'batch_size',
+        for name in ('validation_id', 'model_size', 'gpus', 'micro_batch_size', 'batch_size',
                      'learning_rate', 'weight_decay', 'epochs', 'seed', 'max_steps',
                      'epoch_fraction', 'branch_from', 'wandb_project', 'eval_interval'):
             value = getattr(args, name)
@@ -108,6 +111,8 @@ def stage_arguments(args):
             result.append('--resume-latest')
         if args.decay_horizons:
             result += ['--decay-horizons', *map(str, args.decay_horizons)]
+    if args.stage == 'validate-model':
+        result += ['--model-directory', str(args.model_directory)]
     if args.stage == 'evaluate-model':
         result += ['--evals', *args.evals]
     return result
@@ -167,7 +172,7 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
         'description': f'Tokenizer project: {args.stage}; source {revision}',
         'tasks': [{
             'name': 'main',
-            'image': {'beaker' if args.stage in MODEL_STAGES else 'docker': args.image},
+            'image': {'beaker' if args.stage in (*MODEL_STAGES, 'validate-model') else 'docker': args.image},
             'command': ['bash', '/code/bootstrap.sh'],
             'arguments': stage_arguments(args),
             'envVars': env_vars,
@@ -282,7 +287,7 @@ def main():
             if set(resolved_clusters) - set(eligible):
                 raise ValueError('Requested cluster is not an accessible Weka batch cluster')
             clusters = [b.cluster.get(name) for name in resolved_clusters]
-            if args.stage in MODEL_STAGES:
+            if args.stage in (*MODEL_STAGES, 'validate-model'):
                 b.image.get(args.image)
             if gpu_count(args):
                 from google.protobuf.json_format import MessageToDict

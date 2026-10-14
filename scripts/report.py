@@ -106,7 +106,7 @@ def build_report_data(state):
     for key, node in nodes.items():
         if node['stage'] != 'train-model':
             continue
-        if node.get('study_role') == 'superseded_plan':
+        if node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
         pool, vocab, model = node.get('data_size', '100GB'), node['vocab_size'], node['model_size']
         conversion = next((n for n in nodes.values() if n['stage'] == 'convert-model' and key in n['dependencies']), {})
@@ -116,6 +116,8 @@ def build_report_data(state):
         losses = dict(node.get('reported_metrics', {}))
         losses.update(node.get('summary', {}).get('training', {}).get('latest_metrics', {}))
         metrics = {k: losses.get(k) for k in ('train_bpb', 'validation_bpb')}
+        if node.get('shared_validation_required'):
+            metrics['validation_bpb'] = node.get('shared_validation', {}).get('metrics', {}).get('validation_bpb')
         for task in EVALS:
             metrics[task] = evaluation.get('summary', {}).get('metrics', {}).get(task, {}).get(
                 'bpb' if task == 'dolma_bpb' else 'accuracy')
@@ -129,6 +131,7 @@ def build_report_data(state):
                      'epoch_fraction': float(argument(node, '--epoch-fraction', 1)),
                      'study_role': node.get('study_role'),
                      'resume_verified': node.get('resume_verified'),
+                     'shared_validation': node.get('shared_validation'),
                      'previous_attempts': node.get('previous_attempts', []),
                      'wandb_url': node.get('reported_metrics', {}).get('wandb_url'),
                      'seed': cfg['training']['seed'], 'epochs': cfg['training']['epochs'],

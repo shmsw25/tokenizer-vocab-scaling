@@ -118,7 +118,9 @@ def main():
     accumulation_steps = t.get('gradient_accumulation_steps', 1)
     # Sequences per optimizer step. EMO splits each rank's share into microbatches.
     global_batch_size = t['micro_batch_size'] * world_size * accumulation_steps
-    paths = [data_dir / 'train.bin', data_dir / 'eval.bin']
+    validation_meta = cfg.get('validation', {}).get('meta', meta['eval'])
+    validation_path = Path(validation_meta['output']) if cfg.get('validation') else data_dir / 'eval.bin'
+    paths = [data_dir / 'train.bin', validation_path]
     if any(p.stat().st_size // 4 < seq_length for p in paths):
         raise ValueError('Insufficient train/eval tokens for seq_length')
     work_dir = output_dir / 'work'
@@ -166,7 +168,7 @@ def main():
                 'report_metrics': ReportMetricsCallback(
                     output_dir=str(output_dir),
                     train_tokens_per_byte=meta['train']['tokens'] / meta['train']['bytes'],
-                    eval_tokens_per_byte=meta['eval']['tokens'] / meta['eval']['bytes']),
+                    eval_tokens_per_byte=validation_meta['tokens'] / validation_meta['bytes']),
                 'wandb': WandBCallback(enabled=t.get('report_to') == 'wandb',
                                       project=t.get('wandb_project', 'tokenizer-scaling'),
                                       name=cli.run_name or output_dir.name),

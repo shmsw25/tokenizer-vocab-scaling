@@ -209,3 +209,21 @@ def test_horizons_release_only_after_checkpoint_and_complete_only_after_all_eval
     for key in s['study']['required']:s['nodes'][key]['status']='succeeded'
     study.advance_plan(s)
     assert s['study']['phase']=='100gb_horizons'
+
+
+def test_corrected_architecture_never_reuses_legacy_and_waits_for_validation():
+    s=fixture();s['study'].update(architecture_revision=2,validation_node='prepare-validation',architecture_archive_node='archive-medium-large')
+    old=s['study']['brackets']['medium_large:32000']['baseline'];s['nodes'][old]['legacy_architecture']=True
+    new=study.model_run(s,'5GB','medium_large',32000,.001,role='lr_baseline')
+    assert new!=old and new.endswith('-prenorm-v2')
+    assert '--resume-latest' not in s['nodes'][new]['arguments']
+    assert '--validation-id' in s['nodes'][new]['arguments']
+    assert {'prepare-validation','archive-medium-large'}<=set(s['nodes'][new]['dependencies'])
+    for k in (old,new):s['nodes'][k].update(status='succeeded',summary={'model_dir':'/models/'+k,'training':{'latest_metrics':{'validation_bpb':1.}}})
+    s['nodes'][study.eval_key(new)]['status']='succeeded'
+    study.sync_shared_validation(s)
+    assert study.completed_score(s['nodes'][new]) is None
+    vk=new.replace('train-','validation-',1);s['nodes'][vk].update(status='succeeded',summary={'metrics':{'validation_bpb':.95}})
+    study.sync_shared_validation(s)
+    assert study.completed_score(s['nodes'][new])==.95
+    assert old.replace('train-','validation-',1) not in s['nodes']

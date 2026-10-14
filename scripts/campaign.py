@@ -351,7 +351,8 @@ def refresh(state, folder):
                             write_json(folder / 'summaries' / f'{child_key}.json', child['summary'])
                 elif node['status'] == 'succeeded' and key != 'download':
                     dataset = b.workload.get_results(workload)
-                    url = b.dataset.get_file_link(dataset, 'summary.json')
+                    result_file = 'archive.json' if node['stage'] == 'archive-model-directory' else 'summary.json'
+                    url = b.dataset.get_file_link(dataset, result_file)
                     with urllib.request.urlopen(url, timeout=60) as response:
                         node['summary'] = json.loads(response.read(10_000_000))
                     write_json(folder / 'summaries' / f'{key}.json', node['summary'])

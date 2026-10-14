@@ -496,3 +496,35 @@ The readable model path omits warmup, decay, and training budget (epoch/step
 limit). All remain recorded in the configuration; its hash distinguishes
 otherwise conflicting runs. `medium_large` is the renamed original 1B model,
 with no architecture change.
+
+### Shared 100M-token validation and corrected medium_large (2026-10-14)
+
+All three model configurations now use EMO's `TransformerBlockType.default`
+(pre-norm RMSNorm) and `qk_norm=false`. The previous medium_large architecture
+used reordered norms and QK normalization; its runs are preserved under
+`models/medium_large_old` and excluded from report plots, grid, and LR selection.
+Corrected medium_large runs start from scratch with distinct `prenorm-v2` node
+keys. Tokenizers and training streams are reused. Tied embeddings, embedding WD,
+model dimensions, WSD, batch size, and the recovery-aware loss guard are retained.
+
+`prepare-validation` creates `validation/dolma100m-v1/documents.jsonl` from the
+complement of the original 100GB parent within the downloaded 250GB sample.
+It reconstructs and hashes the original parent sampling, removes exact text
+matches against that entire parent (including the 1000-document test sample),
+shuffles documents deterministically, and stops at a whole-document boundary
+at or above 100M tokens under the frozen 5GB/32K tokenizer. It publishes the raw
+text hash, source hashes, text bytes, document counts and target overshoot.
+All vocabularies and pools use exactly those documents, so their token counts
+naturally differ. This matches the scale of arXiv:2610.15965's 100M-token DCLM
+validation, not its dataset or tokenizer. Existing training files are unchanged.
+
+The CPU preparation job also writes the initial nine validation streams.
+Future vocabularies/pools use the CPU `tokenize-validation` stage. New training
+passes `--validation-id dolma100m-v1`; this provenance participates in the run
+fingerprint. Already-submitted/resuming jobs keep their original configuration.
+After their existing conversion/evaluation succeeds, one-GPU `validate-model`
+jobs rescore the checkpoints on the common corpus. LR selection waits for these
+shared scores, rather than mixing them with the earlier pool-specific 1% split.
+The post-training scorer predicts every token except the first in fixed context
+windows and applies the repository's token-CE-to-byte normalization. The separate
+1000-document Dolma test score in the five-column report remains unchanged.
