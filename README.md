@@ -100,6 +100,17 @@ embedding/output matrix while preserving ordinary `--weight-decay`. The default
 applies the same decay to both. EmbedWD is a run hyperparameter, displayed beside
 LR, WD, and BS in the existing pool/model/vocabulary report groups.
 
+The campaign also audits the full W&B `train/CE loss` history, including earlier
+attempts of resumed runs. After warmup plus 100 steps, a loss at least twice the
+preceding 100-observation median and at least 1 CE higher is flagged for review.
+Three adjacent optimizer steps each at least three times that median and 3 CE
+higher automatically mark a run unhealthy, even if it later recovers. These are
+operational thresholds, not a statistical test. Human decisions take precedence.
+Unhealthy scores are blank in the report and excluded from plots and selection;
+raw results and evidence remain in downloadable provenance. Borderline review
+flags retain their results pending a decision. Missing W&B history is recorded
+as unavailable, never certified healthy. This audit does not change early stopping.
+
 ### Batch size
 
 Sequences per optimizer step = `micro_batch_size` x number of GPUs x

@@ -2,6 +2,7 @@
 import copy
 import math
 from datetime import datetime, timezone
+from loss_curve_health import invalid_result
 
 MODELS = ('small', 'medium', 'medium_large')
 HORIZONS = (.05, .1, .2, .4)
@@ -30,6 +31,8 @@ def completed_score(node):
     # A suspected infrastructure failure is not evidence against a learning rate.
     if node.get('failure_investigation', {}).get('status') == 'unresolved':
         return None
+    if invalid_result(node):
+        return math.inf
     if node.get('health_stop') and node['status'] in ('failed', 'canceled'):
         return math.inf
     if node['status'] != 'succeeded':
@@ -167,6 +170,8 @@ def trend_decision(state):
             values = {}
             for vocab in (32000, 64000, 128000):
                 key = state['study']['transfers'][f'{pool}:{model}:{vocab}'] if pool != '5GB' else state['study']['selected'][f'{model}:{vocab}']['key']
+                if invalid_result(state['nodes'][key]):
+                    return None
                 metric = state['nodes'][eval_key(key)].get('summary', {}).get('metrics', {}).get('dolma_bpb', {}).get('bpb')
                 if metric is None:
                     return None
@@ -194,7 +199,7 @@ def advance_pool_lr_search(state, vocabs, required):
                 keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial') for lr in rates]
                 search.setdefault('runs', {})[coordinate] = keys
                 for key in keys:
-                    if nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled'):
+                    if invalid_result(nodes[key]) or (nodes[key].get('health_stop') and nodes[key]['status'] in ('failed', 'canceled')):
                         required.discard(eval_key(key))
                     else:
                         required.add(eval_key(key))
@@ -219,6 +224,14 @@ def advance_plan(state):
     study = state.get('study')
     if not study:
         return
+    # Invalidation must also revoke cached winners and transfer decisions.
+    for choices in (study.get('selected', {}), study.get('pool_lr_search', {}).get('selected', {})):
+        for coordinate, choice in list(choices.items()):
+            if invalid_result(state['nodes'][choice['key']]):
+                del choices[coordinate]
+    for coordinate, key in list(study.get('transfers', {}).items()):
+        if invalid_result(state['nodes'][key]):
+            del study['transfers'][coordinate]
     sync_shared_validation(state)
     nodes = state['nodes']
     vocabs = study['cohorts'][-1]
@@ -232,9 +245,13 @@ def advance_plan(state):
                 key = model_run(state, '5GB', model, vocab, fixed_lr, role='fixed_lr')
                 study['brackets'][pair] = {'baseline': key, 'fixed_lr': fixed_lr}
                 score = completed_score(nodes[key])
-                study['selected'][pair] = dict(key=key, lr=fixed_lr, validation_bpb=score,
-                    candidates=[key], selection='fixed_by_user')
-                required.add(eval_key(key))
+                if not invalid_result(nodes[key]):
+                    study['selected'][pair] = dict(key=key, lr=fixed_lr, validation_bpb=score,
+                        candidates=[key], selection='fixed_by_user')
+                if invalid_result(nodes[key]):
+                    required.discard(eval_key(key))
+                else:
+                    required.add(eval_key(key))
                 if score is None or not math.isfinite(score): all_selected = False
                 continue
             bracket = study['brackets'].setdefault(pair, {})
@@ -266,7 +283,7 @@ def advance_plan(state):
                         study['selected'][pair] = dict(key=winner, lr=float(arg(nodes[winner], '--learning-rate')),
                             validation_bpb=score, candidates=[key for _, key in scores])
             for kind in ('baseline', 'lower', 'next'):
-                if kind in bracket and not nodes[bracket[kind]].get('health_stop'):
+                if kind in bracket and not nodes[bracket[kind]].get('health_stop') and not invalid_result(nodes[bracket[kind]]):
                     required.add(eval_key(bracket[kind]))
                 elif kind in bracket:
                     required.discard(eval_key(bracket[kind]))
@@ -312,10 +329,12 @@ def advance_plan(state):
                     key = model_run(state, '100GB', model, vocab, lr, role='100gb_decay_branch', fraction=fraction, parent=trunk)
                     required.add(eval_key(key))
     study['required'] = sorted(required)
-    trunks_done = all(nodes[eval_key(hundred[f'{m}:{v}'])]['status'] == 'succeeded' for m in MODELS for v in vocabs)
+    trunks_done = all(nodes[eval_key(hundred[f'{m}:{v}'])]['status'] == 'succeeded'
+                      and not invalid_result(nodes[hundred[f'{m}:{v}']]) for m in MODELS for v in vocabs)
     branches_published = all({f'{h:g}' for h in HORIZONS} <= set(nodes[hundred[f'{m}:{v}']].get('branch_checkpoints', {}))
                              for m in MODELS for v in vocabs)
-    if not trunks_done or not branches_published or any(nodes[k]['status'] != 'succeeded' for k in required):
+    if not trunks_done or not branches_published or any(nodes[k]['status'] != 'succeeded'
+            or invalid_result(nodes.get(k.replace('eval-', 'train-', 1), {})) for k in required):
         study['phase'] = '100gb_horizons'
         return
     if study['smaller_vocab_decision'] is None:
@@ -397,9 +416,18 @@ def live_gpu_budget(state):
 
 def monitor_wandb(state):
     """Read the actual W&B runs as well as retaining the in-job loss guard."""
-    targets = [n for n in state['nodes'].values() if n['stage'] == 'train-model'
-               and n.get('reported_metrics', {}).get('wandb_path')
-               and (n['status'] not in ('succeeded', 'failed', 'canceled') or not n.get('wandb_final_checked'))]
+    from loss_curve_health import history_paths, needs_review, review_node
+    from pipeline import REPO
+    cache_dir = REPO / '.build/loss-curve-health/histories'
+    candidates = [n for n in state['nodes'].values() if n['stage'] == 'train-model'
+                  and not excluded_run(state, n) and not n.get('legacy_architecture')
+                  and n.get('study_role') != 'superseded_plan' and n['status'] != 'canceled']
+    for node in candidates:
+        if node['status'] in ('succeeded', 'failed') and not history_paths(node) and needs_review(node):
+            review_node(node, None, cache_dir, now())
+    targets = [n for n in candidates if history_paths(n)
+               and (n['status'] not in ('succeeded', 'failed', 'canceled')
+                    or not n.get('wandb_final_checked') or needs_review(n))]
     if not targets:
         return
     try:
@@ -410,16 +438,27 @@ def monitor_wandb(state):
             key = b.secret.read(b.secret.get('SEWONM_WANDB_API_KEY', workspace=ws), workspace=ws)
         api = wandb.Api(api_key=key, timeout=20)
         del key
+        failed = []
         for node in targets:
-            run = api.run(node['reported_metrics']['wandb_path'])
-            metrics = dict(run.summary)
-            node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
-                'metrics': {k: v for k, v in metrics.items() if k in
-                    ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/grad_norm', '_step')
-                    and isinstance(v, (int, float)) and math.isfinite(v)}}
-            if node['status'] in ('succeeded', 'failed', 'canceled'):
-                node['wandb_final_checked'] = True
+            try:
+                path = node.get('reported_metrics', {}).get('wandb_path')
+                run = api.run(path) if path else None
+                if run is not None:
+                    metrics = dict(run.summary)
+                    node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
+                        'metrics': {k: v for k, v in metrics.items() if k in
+                            ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/grad_norm', '_step')
+                            and isinstance(v, (int, float)) and math.isfinite(v)}}
+                review_node(node, api, cache_dir, now(), current_run=run)
+                if node['status'] in ('succeeded', 'failed', 'canceled'):
+                    node['wandb_final_checked'] = True
+            except Exception as error:
+                # Keep previous evidence and human decisions; auth details are never serialized.
+                node.setdefault('loss_curve_review', {})['error'] = type(error).__name__ + ': loss history query failed'
+                failed.append(type(error).__name__)
         state.pop('wandb_monitor_error', None)
+        if failed:
+            state['wandb_monitor_error'] = f'W&B history unavailable for {len(failed)} run(s); prior observations preserved'
     except Exception as error:
         # Do not serialize exception text: auth failures may include sensitive request details.
         state['wandb_monitor_error'] = type(error).__name__ + ': W&B query failed; Beaker loss logs and in-job health guard remain available'
@@ -431,7 +470,7 @@ def sync_shared_validation(state):
     if not study.get('validation_node'):return
     nodes=state['nodes']; required=[]
     for key,n in list(nodes.items()):
-        if n['stage']!='train-model' or excluded_run(state,n) or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan':continue
+        if n['stage']!='train-model' or excluded_run(state,n) or n.get('legacy_architecture') or n.get('study_role')=='superseded_plan' or invalid_result(n):continue
         n['shared_validation_required']=True
         vk=key.replace('train-','validation-',1)
         evaluation=nodes.get(eval_key(key),{})

@@ -111,6 +111,9 @@ def record_validation_publications(node, lines):
 
 def dependency_ready(state, node, dependency):
     prerequisite = state['nodes'][dependency]
+    from loss_curve_health import invalid_result
+    if invalid_result(prerequisite):
+        return False
     if prerequisite['status'] == 'succeeded':
         return True
     study = state.get('study', {})
@@ -133,11 +136,12 @@ def dependency_ready(state, node, dependency):
 
 def ready_nodes(state):
     from adaptive_study import excluded_run
+    from loss_curve_health import invalid_result
     if state.get('submission_hold'):
         return []
     ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
-            and not node.get('hold_reason') and not excluded_run(state, node)
+            and not node.get('hold_reason') and not excluded_run(state, node) and not invalid_result(node)
             and all(dependency_ready(state, node, dep) for dep in node['dependencies'])]
     return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
 

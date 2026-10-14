@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pipeline import DEFAULT_BATCH_SIZE, EVALS, REPO
 from adaptive_study import excluded_run
+from loss_curve_health import invalid_result
 
 MODEL_ORDER = ['small', 'medium', 'medium_large']
 COLORS = {32000: '#2563eb', 64000: '#8b5cf6', 128000: '#dc681e'}
@@ -129,8 +130,18 @@ def build_report_data(state):
             shared = node.get('shared_validation') or evaluation.get('summary', {}).get('shared_validation', {})
             metrics['dolma_bpb'] = shared.get('metrics', {}).get('validation_bpb')
         budget = compute_budget(node, cfg, streams.get((pool, vocab), {}), streams.get((pool, 32000), {}))
+        raw_metrics = dict(metrics)
+        invalid = invalid_result(node)
+        training_status = display_status(node['status'])
+        review_needed = node.get('loss_curve_review', {}).get('status') == 'review_needed'
+        if invalid:
+            metrics = {name: None for name in metrics}
         runs.append({'id': key, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
-                     'model': model, 'status': display_status(node['status']),
+                     'model': model, 'training_status': training_status,
+                     'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
+                     'result_valid': not invalid,
+                     'loss_curve_review': node.get('loss_curve_review'),
+                     'loss_health_decision': node.get('loss_health_decision'),
                      'eval_status': display_status(evaluation.get('status', 'pending')),
                      'conversion_status': display_status(conversion.get('status', 'pending')),
                      'lr': cfg['training']['learning_rate'], 'wd': cfg['training']['weight_decay'],
@@ -145,7 +156,7 @@ def build_report_data(state):
                      'microbatch': cfg['training']['micro_batch_size'],
                      'weight_tying': cfg['model'].get('tie_word_embeddings', False),
                      'embedding_wd': cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay']),
-                     'metrics': metrics, 'loss_observations': losses, 'compute': budget,
+                     'metrics': metrics, 'raw_metrics': raw_metrics, 'loss_observations': losses, 'compute': budget,
                      'progress': node.get('progress', {}),
                      'error': node.get('monitor_error') or node.get('submission_error'),
                      'url': node.get('receipt', {}).get('url'),
@@ -155,7 +166,8 @@ def build_report_data(state):
         groups[(run['pool'], run['vocab'], run['model'], run['epoch_fraction'])].append(run)
     selected = []
     for group in groups.values():
-        eligible = [r for r in group if r['status'] == 'completed' and r['metrics']['validation_bpb'] is not None]
+        eligible = [r for r in group if r['training_status'] == 'completed' and r['result_valid']
+                    and r['metrics']['validation_bpb'] is not None]
         pool_search = state.get('study', {}).get('pool_lr_search', {})
         fixed_lr = state.get('study', {}).get('fixed_learning_rates', {}).get(group[0]['model'])
         if fixed_lr is not None:
@@ -168,7 +180,7 @@ def build_report_data(state):
             chosen_lr = state.get('study', {}).get('selected', {}).get(f"{group[0]['model']}:{group[0]['vocab']}", {}).get('lr')
         if chosen_lr is not None:
             eligible = [r for r in eligible if r['lr'] == chosen_lr]
-        choice = min(eligible, key=lambda r: (r['metrics']['validation_bpb'], r['id'])) if eligible else group[0] if len(group) == 1 else None
+        choice = min(eligible, key=lambda r: (r['metrics']['validation_bpb'], r['id'])) if eligible else group[0] if len(group) == 1 and group[0]['result_valid'] else None
         if choice:
             selected.append(choice['id'])
     pools = state.get('training_pools', ['100GB'])
@@ -204,7 +216,7 @@ def build_figures(data, horizon=1.):
                          and r['epoch_fraction'] == (horizon if pool == '100GB' else 1.)]
             plotted = 0
             for vocab in sorted({r['vocab'] for r in pool_runs}):
-                records = sorted([r for r in pool_runs if r['vocab'] == vocab and r['status'] == 'completed'
+                records = sorted([r for r in pool_runs if r['vocab'] == vocab and r['training_status'] == 'completed' and r['result_valid']
                                   and r['compute']['epoch_flops'] is not None and r['metrics'][metric] is not None],
                                  key=lambda r: MODEL_ORDER.index(r['model']))
                 plotted += len(records)
@@ -245,6 +257,7 @@ def render_report(state, destination):
     if study := state.get('study'):
         state['complete'] = study['phase'] == 'complete' and all(
             state['nodes'][k]['status'] == 'succeeded' and set(EVALS) <= set(state['nodes'][k].get('summary', {}).get('metrics', {}))
+            and not invalid_result(state['nodes'].get(k.replace('eval-', 'train-', 1), {}))
             for k in study['required'])
     else:
         state['complete'] = bool(evaluations) and all(n['status'] == 'succeeded' for n in state['nodes'].values()) and all(
