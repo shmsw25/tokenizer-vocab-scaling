@@ -93,6 +93,44 @@ def migrate_pools(state, vocabs, models, pools, training_pools):
     state.pop('submission_hold', None)
 
 
+def record_validation_publications(node, lines):
+    """Retain atomic publication notices while the CPU job builds other streams."""
+    workload = node.get('receipt', {}).get('workload_id')
+    if node.get('validation_publications', {}).get('workload_id') != workload:
+        node['validation_publications'] = {'workload_id': workload, 'streams': {}}
+    published = node['validation_publications']
+    for line in lines:
+        for fragment in line['message'].splitlines():
+            if fragment.startswith('VALIDATION_READY '):
+                published['corpus'] = json.loads(fragment.removeprefix('VALIDATION_READY '))
+            elif fragment.startswith('VALIDATION_TOKENS_READY '):
+                meta = json.loads(fragment.removeprefix('VALIDATION_TOKENS_READY '))
+                recipe = meta['recipe']
+                published['streams'][f"{recipe['pool']}:{recipe['vocab_size']}"] = meta
+
+
+def dependency_ready(state, node, dependency):
+    prerequisite = state['nodes'][dependency]
+    if prerequisite['status'] == 'succeeded':
+        return True
+    study = state.get('study', {})
+    if (not study.get('validation_overlap', {}).get('enabled')
+            or dependency != study.get('validation_node')
+            or prerequisite['status'] != 'running' or prerequisite.get('monitor_error')
+            or node['stage'] not in (*MODEL_STAGES, 'validate-model')):
+        return False
+    published = prerequisite.get('validation_publications', {})
+    if published.get('workload_id') != prerequisite.get('receipt', {}).get('workload_id'):
+        return False  # Never reuse readiness from a superseded preparation attempt.
+    corpus = published.get('corpus', {})
+    stream = published.get('streams', {}).get(f"{node.get('data_size')}:{node.get('vocab_size')}", {})
+    return bool(corpus and stream
+                and stream['recipe']['validation_id'] == study.get('validation_id')
+                and stream['recipe']['documents_sha256'] == corpus['sha256']
+                and stream['documents'] == corpus['documents']
+                and stream['bytes'] == corpus['text_bytes'])
+
+
 def ready_nodes(state):
     from adaptive_study import excluded_run
     if state.get('submission_hold'):
@@ -100,7 +138,7 @@ def ready_nodes(state):
     ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
             and not node.get('hold_reason') and not excluded_run(state, node)
-            and all(state['nodes'][dep]['status'] == 'succeeded' for dep in node['dependencies'])]
+            and all(dependency_ready(state, node, dep) for dep in node['dependencies'])]
     return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
 
 
@@ -313,6 +351,8 @@ def refresh(state, folder):
                           'message': line.message.decode(errors='replace')}
                          for line in b.job.logs(job, tail_lines=2000 if node.get('chain_evaluation') else 160, follow=False)]
                 write_json(folder / 'logs' / f'{key}.json', lines)
+                if node['stage'] == 'prepare-validation':
+                    record_validation_publications(node, lines)
                 if node['stage'] == 'train-model':
                     for line in lines:
                         for fragment in line['message'].splitlines():
