@@ -375,9 +375,13 @@ def train_model(args):
             checkpoint = latest_checkpoint(output)
             # Validate all ranks before the distributed restore, which also validates tensor metadata.
             required = [checkpoint / 'train' / f'rank{rank}.pt' for rank in range(args.gpus)]
-            required += list((checkpoint / 'model_and_optim').glob('*.distcp'))
-            if len(required) == args.gpus or any(not p.is_file() or not p.stat().st_size for p in required):
-                raise ValueError(f'Incomplete full-state resume checkpoint: {checkpoint}')
+            missing = [str(p) for p in required if not p.is_file() or not p.stat().st_size]
+            shards = list((checkpoint / 'model_and_optim').glob('*.distcp'))
+            # DDP deduplication leaves valid empty per-rank writer buckets. The
+            # distributed restore validates every metadata-referenced tensor.
+            if missing or not any(p.stat().st_size > 0 for p in shards):
+                raise ValueError(f'Incomplete full-state resume checkpoint: {checkpoint}; '
+                                 f'missing trainer states: {missing}; shards: {len(shards)}')
             record = {'checkpoint': str(checkpoint), 'step': int(checkpoint.name[4:]),
                       'learning_rate': cfg['training']['learning_rate'],
                       'source_revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}

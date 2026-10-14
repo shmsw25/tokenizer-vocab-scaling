@@ -234,6 +234,8 @@ def test_resume_requires_checkpoint_and_does_not_change_recipe_or_output(tmp_pat
     with pytest.raises(ValueError,match='Incomplete full-state'):pipeline.train_model(args)
     for path in [f'train/rank{i}.pt' for i in range(args.gpus)]+['model_and_optim/__0_0.distcp']:
         p=checkpoint/path;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'fixture')
+    # EMO writes empty buckets for ranks with no tensors after DDP deduplication.
+    (checkpoint/'model_and_optim/__1_0.distcp').touch()
     pipeline.write_json(output/'health_stop.json',{'step':123,'reason':'old guard'})
     def launch(command):
         assert command[-2:]==['--resume-from',str(checkpoint)]
