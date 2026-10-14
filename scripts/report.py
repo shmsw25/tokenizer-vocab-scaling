@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 
-from pipeline import EVALS, REPO
+from pipeline import DEFAULT_BATCH_SIZE, EVALS, REPO
 
 MODEL_ORDER = ['small', 'medium', 'medium_large']
 COLORS = {32000: '#2563eb', 64000: '#8b5cf6', 128000: '#dc681e'}
@@ -74,7 +74,7 @@ def compute_budget(node, cfg, meta, baseline):
     seq = round(4096 * meta['tokens_per_byte'] / baseline['tokens_per_byte'])
     if node.get('summary', {}).get('config') and seq != cfg['seq_length']:
         raise ValueError('Saved training context differs from measured context')
-    batch = int(argument(node, '--batch-size', cfg.get('pipeline', {}).get('global_batch_size', 256)))
+    batch = int(argument(node, '--batch-size', cfg.get('pipeline', {}).get('global_batch_size', DEFAULT_BATCH_SIZE)))
     tokens_per_step = seq * batch
     epoch_tokens = meta['train']['tokens'] // tokens_per_step * tokens_per_step
     estimate = model_compute(json.dumps(cfg['model'], sort_keys=True), node['vocab_size'], seq)

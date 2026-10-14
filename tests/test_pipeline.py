@@ -57,17 +57,35 @@ def test_invalid_gpu_and_vocab_arguments():
         pipeline.validate_args(args_for('train-tokenizer', '--vocab-size', '256'))
 
 
-def test_training_uses_urgent_cluster_placement_and_zero_minimum_runtime():
-    node = campaign.make_nodes([32000], ['small'])['train-small-5gb-32000']
+@pytest.mark.parametrize('vocab,runtime,nanoseconds', [(32000, '8h', 28_800_000_000_000),
+                                                    (64000, '0s', 0), (128000, '0s', 0)])
+def test_training_uses_urgent_cluster_placement_and_vocab_minimum_runtime(vocab, runtime, nanoseconds):
+    nodes = campaign.make_nodes([32000, 64000, 128000], ['small'])
+    node = nodes[f'train-small-5gb-{vocab}']
     args = submit.parser().parse_args([*node['arguments'], *campaign.placement_arguments(node)])
+    pipeline.validate_args(args)
     spec = submit.make_spec(args)
     task = submit.parse_spec(spec).to_json()['tasks'][0]
     assert task['constraints'] == {'cluster': ['ai2/jupiter']}
     assert task['resources']['gpuCount'] == 8
-    assert task['context']['minRuntime'] == 0
+    assert spec['tasks'][0]['context']['minRuntime'] == runtime
+    assert task['context']['minRuntime'] == nanoseconds
+    assert type(task['context']['minRuntime']) is int
     assert task['context']['priority'] == 'urgent'
     assert args_for('train-model', '--vocab-size', '32000').priority == 'urgent'
     assert args_for('evaluate-model', '--vocab-size', '32000').priority == 'normal'
+    assert args.batch_size == 128 and args.micro_batch_size == 16 and args.learning_rate == .002
+    assert '--min-runtime' not in submit.stage_arguments(args)
+    assert nodes[f'convert-small-5gb-{vocab}']['arguments'][1:] == node['arguments'][1:]
+    assert nodes[f'eval-small-5gb-{vocab}']['arguments'][1:] == node['arguments'][1:]
+
+
+def test_minimum_runtime_override_and_invalid_duration():
+    args = args_for('train-model', '--vocab-size', '32000', '--min-runtime', '0s')
+    pipeline.validate_args(args)
+    assert submit.parse_spec(submit.make_spec(args)).to_json()['tasks'][0]['context']['minRuntime'] == 0
+    with pytest.raises(ValueError, match='integer duration'):
+        submit.runtime_nanoseconds('-1h')
 
 
 @pytest.mark.parametrize('stage', ['train-tokenizer', 'tokenize-data', 'convert-model'])
@@ -165,11 +183,11 @@ def test_scaled_context_fixed_batch_and_output(tmp_path):
     assert cfg['seq_length'] == round(4096 * 0.4 / 0.5)
     assert cfg['pipeline']['scheduler'] == 'WSD'
     assert cfg['training']['gradient_accumulation_steps'] == 1
-    assert cfg['training']['warmup_steps'] == 96
+    assert cfg['training']['warmup_steps'] == 192
     assert 'warmup_fraction' not in cfg['training']
     assert '_wu' not in output.name and '_decay' not in output.name and '_e1_' not in output.name
     assert output.parent == tmp_path / 'models/small/default_100GB_48000'
-    assert 'lr0.0003_wd0.1_bs256_seq3277_seed42' in output.name
+    assert 'lr0.002_wd0.1_bs128_seq3277_seed42' in output.name
     assert '_wt_EmbedWD_' in output.name
     for stage in ('convert-model', 'evaluate-model'):
         downstream = copy.deepcopy(args)
@@ -179,7 +197,7 @@ def test_scaled_context_fixed_batch_and_output(tmp_path):
     no_wd_path = pipeline.training_plan(args)[1]
     assert '_wt_' in no_wd_path.name and 'EmbedWD' not in no_wd_path.name
     args.weight_decay = None
-    args.learning_rate = 0.002
+    args.learning_rate = 0.003
     assert pipeline.training_plan(args)[1] != output
     args.gpus = 2
     cfg, _ = pipeline.training_plan(args)
@@ -298,6 +316,20 @@ def test_campaign_dependencies_retry_and_report(tmp_path):
     assert 'In progress' in report.read_text()
     assert 'Dolma BPB' in report.read_text()
     assert '<th>Pool</th>' in report.read_text() and '2.5GB' in report.read_text()
+
+
+def test_user_reconfigurations_preserve_failure_retry_allowance():
+    key = 'train-small-5gb-32000'
+    state = {'campaign': 'retry-test', 'nodes': campaign.make_nodes([32000], ['small'])}
+    node = state['nodes'][key]
+    node['previous_attempts'] = [{'kind': 'scheduling_change'}, {'kind': 'reconfiguration'}]
+    for suffix in (3, 4):
+        node.update(status='failed', receipt={'workload_id': f'failure-{suffix}'})
+        campaign.retry_node(state, key)
+        assert node['name'].endswith(f'-retry{suffix}')
+    node['status'] = 'failed'
+    with pytest.raises(ValueError, match='Already attempted'):
+        campaign.retry_node(state, key)
 
 
 def test_campaign_migration_preserves_parent_and_refuses_active_jobs():

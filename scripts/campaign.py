@@ -15,7 +15,7 @@ import subprocess
 import sys
 import urllib.request
 
-from pipeline import (DEFAULT_ROOT, EVALS, MODEL_MICROBATCHES, POOL_SIZES, TRAINING_POOLS,
+from pipeline import (DEFAULT_ROOT, DEFAULT_BATCH_SIZE, EVALS, MODEL_MICROBATCHES, POOL_SIZES, TRAINING_POOLS,
                       RAW_STAGES, REPO, data_size, read_json, write_json)
 
 TERMINAL = {'succeeded', 'failed', 'canceled'}
@@ -46,13 +46,16 @@ def make_nodes(vocabs, models, pools=POOL_SIZES, training_pools=TRAINING_POOLS):
         if vocab is not None:
             arguments += ['--vocab-size', str(vocab), '--data-size', pool]
         if model is not None:
-            arguments += ['--model-size', model, '--gpus', '8', '--batch-size', '256',
-                          '--micro-batch-size', str(MODEL_MICROBATCHES[model]), '--epochs', '1']
+            lr = read_json(REPO / 'configs' / f'{model}.json')['training']['learning_rate']
+            arguments += ['--model-size', model, '--gpus', '8', '--batch-size', str(DEFAULT_BATCH_SIZE),
+                          '--micro-batch-size', str(MODEL_MICROBATCHES[model]), '--epochs', '1',
+                          '--learning-rate', str(lr)]
         nodes[key] = {'stage': stage, 'dependencies': dependencies, 'arguments': arguments,
                       'vocab_size': vocab, 'model_size': model, 'data_size': pool, 'status': 'pending',
                       'expected_gpus': 8 if stage == 'train-model' else int(stage == 'evaluate-model')}
         if stage == 'train-model':
-            nodes[key].update(priority='urgent', placement_clusters=['ai2/jupiter'])
+            nodes[key].update(priority='urgent', placement_clusters=['ai2/jupiter'],
+                              min_runtime='8h' if vocab == 32000 else '0s')
 
     add('download', 'download-data', [])
     sample_keys = [f'sample-{size_key(pool)}' for pool in pools]
@@ -192,6 +195,8 @@ def placement_arguments(node):
     result = []
     if node.get('priority'):
         result += ['--priority', node['priority']]
+    if node.get('min_runtime') is not None:
+        result += ['--min-runtime', node['min_runtime']]
     if node.get('placement_clusters'):
         result += ['--cluster', *node['placement_clusters']]
     if node.get('allow_gpu_reservation'):
@@ -307,7 +312,7 @@ def retry_node(state, key):
     if any(n['status'] != 'pending' and key in n['dependencies'] for n in state['nodes'].values()):
         raise ValueError('Cannot retry a job after its dependents have been submitted')
     history = node.setdefault('previous_attempts', [])
-    if len(history) >= 2:
+    if sum(attempt.get('kind') not in {'reconfiguration', 'scheduling_change'} for attempt in history) >= 2:
         raise ValueError('Already attempted three times; investigate before creating a new campaign')
     history.append({k: node[k] for k in ('receipt', 'job_status', 'progress') if k in node})
     for field in ('receipt', 'job_id', 'job_status', 'progress', 'assignment', 'assigned_gpus',

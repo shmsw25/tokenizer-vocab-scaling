@@ -199,14 +199,14 @@ After target and 32k tokenization both succeed:
 ```bash
 scripts/submit_train_model.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size small
 
-# Example override; still 256 global sequences per optimizer step:
+# Example override; still 128 global sequences per optimizer step:
 scripts/submit_train_model.sh --data-size "$DATA_SIZE" --vocab-size "$VOCAB_SIZE" --model-size medium_large \
-  --gpus 8 --micro-batch-size 8 --batch-size 256 --learning-rate 1e-4
+  --gpus 8 --micro-batch-size 8 --batch-size 128 --learning-rate 1e-3
 ```
 
 Every run uses WSD: a fixed linear warmup, stable LR, then linear
 decay (default last 10%) to zero. Warmup follows the infinite-compute recipe: `24 * 1024 = 24576` sequences,
-which is exactly 96 optimizer steps at batch 256, independent of corpus size
+which is exactly 192 optimizer steps at batch 128, independent of corpus size
 and vocabulary. Warmup is not a fraction of the run. The trainer instantiates `olmo_core.optim.WSD`
 directly; the launcher exposes no alternative scheduler. The context is always
 
@@ -214,7 +214,10 @@ directly; the launcher exposes no alternative scheduler. The context is always
 seq_length = round(4096 * tokens_per_byte(target) / tokens_per_byte(32000))
 ```
 
-Every model-training job explicitly sets Beaker `context.minRuntime: 0s`.
+Model-training jobs explicitly set Beaker `context.minRuntime: 8h` for 32K vocabulary
+and `0s` for other vocabularies. Override with `--min-runtime`, using an integer
+duration in seconds, minutes, or hours (for example `0s`, `30m`, or `8h`).
+The REST API receives the equivalent integer number of nanoseconds.
 All three model sizes currently tie input embeddings to the output projection
 (`wt`). AdamW applies the configured weight decay to every trainable parameter,
 including that shared matrix (`EmbedWD` for positive WD).
@@ -236,11 +239,13 @@ per document. The job validates corpus/split agreement and token file sizes,
 then writes the resolved `launch_config.json` before invoking `torchrun`.
 There is no sequence-length override in these submission scripts.
 
-The default is one epoch and 256 global sequences per optimizer step on eight
-H100 GPUs. Per-GPU microbatches are 32 (`small`), 16 (`medium`), and 8
-(`medium_large`), with 1, 2, and 4 accumulation steps respectively. Gradient accumulation is computed as
-`batch_size / (gpus * micro_batch_size)` and must be integral. These settings come from the corresponding model sizes in the infinite-compute
-project; they are fixed across vocabulary sizes.
+The default is one epoch and 128 global sequences per optimizer step on eight
+H100 GPUs. Per-GPU microbatches are 16 (`small`), 16 (`medium`), and 8
+(`medium_large`), with 1, 1, and 2 accumulation steps respectively. Gradient accumulation is computed as
+`batch_size / (gpus * micro_batch_size)` and must be integral. The medium and medium_large microbatches come from the infinite-compute
+project; small is capped at 16 so eight GPUs fit within global batch 128.
+They are fixed across vocabulary sizes. Peak LR is 2e-3 for small and medium,
+and 1e-3 for medium_large; weight decay remains 0.1.
 Per-GPU memory still depends on model and vocabulary size, so arbitrary large
 values are not guaranteed to fit. LR and weight decay default to the selected
 model config. Other controls are `--learning-rate`, `--weight-decay`, `--epochs`,
@@ -300,7 +305,9 @@ It records intended names before submission and recovers uncertain
 submission outcomes by looking up those names. No live training job is restarted
 or duplicated. Failed jobs remain visible for diagnosis; after fixing the cause,
 `--advance --retry-node NODE_KEY` explicitly retries a confirmed failure, resuming
-existing Weka work where supported. It allows at most three attempts per node.
+existing Weka work where supported. It allows at most three failure-recovery
+attempts per node; recorded user-requested recipe or scheduling changes do not
+consume this retry allowance.
 
 Each poll saves job status, observed GPU assignments, log tails, configurations,
 result manifests, and current ETAs. Download ETA uses recent observed text-byte
@@ -332,8 +339,8 @@ the requested hourly chat heartbeat invokes it and reports progress.
 Every submission supports `--cpus`, `--memory`, `--workspace`, `--cluster`,
 `--priority`, `--image`, and `--name`. Workspace and cluster can also default
 from `BEAKER_WORKSPACE` and `BEAKER_CLUSTER`. Model training defaults to `urgent`
-priority; other stages default to `normal`. Model-training jobs always use
-`minRuntime: 0s`. Other stages are non-preemptible
+priority; other stages default to `normal`. Model-training jobs default to
+`minRuntime: 8h` for 32K vocabulary and `0s` otherwise. Other stages are non-preemptible
 unless `--preemptible` is supplied. CPU scripts expose
 no GPU-count flag and always emit `gpuCount: 0`. GPU submissions discover and
 check H100 availability and use the requested cluster as their placement

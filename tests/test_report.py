@@ -36,7 +36,7 @@ def test_exact_emo_compute_and_epoch_tail():
     d, layers, hidden, vocab, seq = 512, 12, 2048, 32000, 4096
     expected = 6 * (layers * (4*d*d + 3*d*hidden) + d*vocab + d) + 12*layers*d*seq
     assert budget['flops_per_token'] == expected
-    assert budget['epoch_tokens'] == 9 * 4096 * 256
+    assert budget['epoch_tokens'] == 19 * 4096 * 128
     assert budget['epoch_flops'] == budget['epoch_tokens'] * expected
     assert budget['dropped_tokens'] == 10_000_000 - budget['epoch_tokens']
     target = metadata(8_000_000, .20)
@@ -61,7 +61,7 @@ def test_counts_variants_selection_and_plot_coordinates(tmp_path):
         nodes[f'train-{model}-5gb-32000'].update(status='succeeded', reported_metrics={'validation_bpb': 2-i*.1})
         nodes[f'eval-{model}-5gb-32000']['summary'] = {'metrics': {'dolma_bpb': {'bpb': 1.5-i*.1}}}
     variant = copy.deepcopy(nodes['train-small-5gb-32000'])
-    variant['arguments'] += ['--learning-rate', '.001']
+    variant['arguments'][variant['arguments'].index('--learning-rate') + 1] = '.001'
     variant['reported_metrics'] = {'validation_bpb': 3.0}
     nodes['train-small-5gb-32000-lr001'] = variant
     data = report.build_report_data(state)

@@ -81,7 +81,7 @@ def test_pool_paths_and_reference_are_specific_to_each_size(tmp_path):
         args = make_meta_fixture(tmp_path, 64000, 0.4, 4_000_000, size)
         cfg, output = pipeline.training_plan(args)
         assert output.parent == tmp_path / 'models/small' / f'default_{size}_64000'
-        assert cfg['seq_length'] == 3277 and cfg['training']['warmup_steps'] == 96
+        assert cfg['seq_length'] == 3277 and cfg['training']['warmup_steps'] == 192
         assert cfg['pipeline']['pool']['data_size'] == size
         outputs.add(output)
         for stage in ('convert-model', 'evaluate-model'):

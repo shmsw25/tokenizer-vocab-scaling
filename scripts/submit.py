@@ -3,6 +3,7 @@ import argparse
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -30,6 +31,21 @@ def gpu_count(args):
     return args.gpus if args.stage == 'train-model' else int(args.stage == 'evaluate-model')
 
 
+def runtime_nanoseconds(value):
+    match = re.fullmatch(r'(\d+)([smh])', value)
+    if not match:
+        raise ValueError('Minimum runtime must be an integer duration, e.g. 0s or 8h')
+    return int(match[1]) * {'s': 1, 'm': 60, 'h': 3600}[match[2]] * 1_000_000_000
+
+
+def minimum_runtime(value):
+    try:
+        runtime_nanoseconds(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    return value
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='stage', required=True)
@@ -48,6 +64,9 @@ def parser():
         s.add_argument('--cpus', type=int, default=RESOURCES[stage][0])
         s.add_argument('--memory', default=RESOURCES[stage][1])
         s.add_argument('--preemptible', action='store_true')
+        if stage == 'train-model':
+            s.add_argument('--min-runtime', type=minimum_runtime,
+                           help='Minimum runtime: defaults to 8h for 32K vocabulary, 0s otherwise')
         s.add_argument('--name', help='Beaker experiment name; otherwise generated uniquely')
         s.add_argument('--image', default=GPU_IMAGE if stage in MODEL_STAGES else CPU_IMAGE,
                        help='Beaker image ID for training; Docker image for CPU stages')
@@ -122,7 +141,9 @@ def make_spec(args, code_dataset='COMMITTED_CODE_DATASET', revision='HEAD', reso
     context = {'priority': args.priority, 'preemptible': args.preemptible}
     if args.stage == 'train-model':
         # Use the current scheduling field, not the deprecated preemptible flag.
-        context = {'priority': args.priority, 'minRuntime': '0s'}
+        context = {'priority': args.priority,
+                   'minRuntime': args.min_runtime if args.min_runtime is not None else
+                   '8h' if args.vocab_size == 32000 else '0s'}
     return {
         'version': 'v2',
         'description': f'Tokenizer project: {args.stage}; source {revision}',
@@ -168,9 +189,7 @@ def parse_spec(spec):
     parsed = BeakerExperimentSpec.from_json(compatible)
     for task, runtime in zip(parsed.tasks, runtimes):
         if runtime is not None:
-            if runtime != '0s':
-                raise ValueError('Only explicit zero minimum runtime is supported')
-            task.context = RuntimeContext(**vars(task.context), min_runtime=0)
+            task.context = RuntimeContext(**vars(task.context), min_runtime=runtime_nanoseconds(runtime))
     return parsed
 
 

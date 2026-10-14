@@ -18,7 +18,8 @@ DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
 REFERENCE_VOCAB = 32000
 # Infinite-compute recipe: 24 steps at a global batch of 1024 sequences.
 WARMUP_SEQUENCES = 24 * 1024
-MODEL_MICROBATCHES = {'small': 32, 'medium': 16, 'medium_large': 8}
+DEFAULT_BATCH_SIZE = 128
+MODEL_MICROBATCHES = {'small': 16, 'medium': 16, 'medium_large': 8}
 MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
 RAW_STAGES = ('download-data', 'sample-pool')
 POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
@@ -63,8 +64,8 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--model-size', default='small', help='Name of configs/<model-size>.json')
         parser.add_argument('--gpus', type=positive_int, default=8)
         parser.add_argument('--micro-batch-size', type=positive_int,
-                            help='Per-GPU sequences; defaults to 32/16/8 by model size')
-        parser.add_argument('--batch-size', type=positive_int, default=256,
+                            help='Per-GPU sequences; defaults to 16/16/8 by model size')
+        parser.add_argument('--batch-size', type=positive_int, default=DEFAULT_BATCH_SIZE,
                             help='Global sequences per optimizer step, independent of GPU count')
         parser.add_argument('--learning-rate', type=positive_float)
         parser.add_argument('--weight-decay', type=float)
