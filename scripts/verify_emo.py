@@ -12,7 +12,7 @@ def main():
         path = ROOT / 'EMO' / name
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise SystemExit(f'Patched EMO file missing or changed: {path}')
-    print(f"Verified local EMO {provenance['commit']} with tied-embedding/DDP patch")
+    print(f"Verified local EMO {provenance['commit']} with recorded local patches")
 
 
 if __name__ == '__main__':

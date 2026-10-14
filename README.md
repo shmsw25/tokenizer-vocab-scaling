@@ -33,7 +33,9 @@ local [EMO](https://github.com/allenai/EMO) training library. `EMO/` is checked
 into this repository at pinned commit `246fdec72e599319c717aefe29a1d1fdad7c97a0`,
 with `emo_tied_embeddings.patch` already applied. The patch adds tied
 input/output embeddings and makes gradient accumulation sync gradients once
-per optimizer step under DDP. `EMO_VENDOR.json` records provenance and hashes;
+per optimizer step under DDP. `emo_optional_te.patch` lets the selected PyTorch
+attention backend load when optional Transformer Engine CUDA libraries are unavailable;
+explicit Transformer Engine selection still fails. `EMO_VENDOR.json` records provenance and hashes;
 setup verifies the patched files. No submodule or extra clone is needed.
 Use `./setup_env.sh cpu` for the CPU-only data/tokenizer dependencies.
 

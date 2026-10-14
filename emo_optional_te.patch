@@ -1,0 +1,21 @@
+diff --git a/src/olmo_core/nn/attention/te_attn_api.py b/src/olmo_core/nn/attention/te_attn_api.py
+index 1bd3e36..82803fe 100644
+--- a/src/olmo_core/nn/attention/te_attn_api.py
++++ b/src/olmo_core/nn/attention/te_attn_api.py
+@@ -1,7 +1,16 @@
++import logging
++import subprocess
++
++
+ try:
+     import transformer_engine.pytorch as te  # type: ignore
+ except ImportError:
+     te = None
++except (OSError, subprocess.CalledProcessError) as error:
++    # TE is optional. Installed packages with missing CUDA libraries must not
++    # prevent explicitly selected PyTorch/FlashAttention backends from loading.
++    logging.getLogger(__name__).warning("Transformer Engine attention unavailable: %s", error)
++    te = None
+ 
+ 
+ def has_te_attn() -> bool:

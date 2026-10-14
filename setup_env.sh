@@ -9,6 +9,8 @@ case "$mode" in
         python scripts/verify_emo.py
         python -m pip install -r requirements.txt
         python -m pip install -e './EMO[wandb]'
+        # Verify the selected backend before torchrun starts eight workers.
+        python -c 'from olmo_core.nn.attention import AttentionBackendName; AttentionBackendName.torch.assert_supported()'
         if [[ "$mode" == all ]]; then
             python -m pip install -r requirements-launch.txt
             python -m pip install -r requirements-report.txt
