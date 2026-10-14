@@ -1,5 +1,6 @@
 """Exercise the WSD boundary against EMO and a real CPU checkpoint round trip."""
 import json
+import gzip
 from pathlib import Path
 import sys
 
@@ -22,7 +23,8 @@ def test_pre_decay_boundary_matches_scheduler(total):
     assert pre_decay_step(4, 1, 0.1) is None
 
 
-def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
+@pytest.mark.parametrize('repack', [False, True])
+def test_full_state_pre_decay_checkpoint_and_resume(tmp_path, repack):
     from olmo_core.data import NumpyDataLoaderConfig, NumpyFSLDatasetConfig, TokenizerConfig
     from olmo_core.nn.attention import AttentionBackendName
     from olmo_core.nn.transformer import TransformerConfig
@@ -32,7 +34,12 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
     from olmo_core.train.train_module import TransformerTrainModuleConfig
 
     tokens = tmp_path / 'tokens.bin'
-    (np.arange(320, dtype=np.uint32) % 128).tofile(tokens)
+    # Repack case crosses two epoch boundaries and checkpoints in epoch 2.
+    (np.arange(64 if repack else 320, dtype=np.uint32) % 128).tofile(tokens)
+    documents = tmp_path / 'documents.csv.gz'
+    if repack:
+        with gzip.open(documents, 'wt') as source:
+            source.writelines(f'{start},{start + 16}\n' for start in range(0, 64, 16))
     output = tmp_path / 'model'
 
     def build():
@@ -46,6 +53,8 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
             compile_model=False).build(model, device=torch.device('cpu'))
         dataset = NumpyFSLDatasetConfig(
             paths=[str(tokens)], sequence_length=8, dtype='uint32', work_dir=str(tmp_path / 'data'),
+            dynamic_repacking=repack, num_documents=4,
+            document_metadata_path=str(documents),
             tokenizer=TokenizerConfig(vocab_size=128, eos_token_id=127, pad_token_id=127)).build()
         loader = NumpyDataLoaderConfig(global_batch_size=16, seed=42, num_workers=0).build(dataset)
         callback = WSDCheckpointerCallback(
@@ -75,7 +84,10 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
     checkpoint = Path(record['path'])
     state = torch.load(checkpoint / 'train/rank0.pt', weights_only=False)
     assert state['global_step'] == 7
-    assert state['data_loader']['batches_processed'] == 7
+    assert state['data_loader']['batches_processed'] == (3 if repack else 7)
+    if repack:
+        assert state['data_loader']['epoch'] == 2
+        assert state['data_loader']['repacking']['document_metadata_digest']
     assert state['rng']
     assert json.loads((checkpoint / '.metadata.json').read_text())['ephemeral'] is False
     assert (output / 'step10/model_and_optim/.metadata').is_file()
@@ -85,7 +97,7 @@ def test_full_state_pre_decay_checkpoint_and_resume(tmp_path):
     resumed, _ = build()
     resumed.load_checkpoint(checkpoint)
     assert resumed.global_step == 7
-    assert resumed.data_loader.batches_processed == 7
+    assert resumed.data_loader.batches_processed == (3 if repack else 7)
     assert resumed.train_module.optim.param_groups[0]['lr'] == pytest.approx(0.001)
     assert resumed.train_module.optim.state
     assert resumed.train_module.scheduler.get_lr(0.001, 8, 10) < 0.001

@@ -2547,6 +2547,11 @@ class NumpyFSLDatasetConfig(NumpyDatasetConfig):
     """
     A source mixture dataset config. If set, the dataset will be built from a mixture of sources.
     """
+    dynamic_repacking: bool = False
+    """Permute documents and repack sequences after the unchanged first epoch."""
+    document_metadata_path: Optional[str] = None
+    num_documents: Optional[int] = None
+    document_metadata_digest: Optional[str] = None
 
     @classmethod
     def from_src_mix(
@@ -2563,6 +2568,11 @@ class NumpyFSLDatasetConfig(NumpyDatasetConfig):
     def validate(self):
         if self.sequence_length <= 0:
             raise OLMoConfigurationError("'sequence_length' must be positive")
+        if self.dynamic_repacking:
+            if self.source_mixture_config is not None or self.mix is not None:
+                raise OLMoConfigurationError("repack requires an explicit single-file source")
+            if self.document_metadata_path is None or self.num_documents is None:
+                raise OLMoConfigurationError("repack requires a document metadata path and count")
         if self.source_mixture_config is not None:
             if self.paths is not None or self.mix is not None:
                 raise OLMoConfigurationError(
@@ -2602,7 +2612,15 @@ class NumpyFSLDatasetConfig(NumpyDatasetConfig):
             allow_mix=True, label_mask_paths=self.label_mask_paths
         )
 
-        dataset = NumpyFSLDataset(
+        dataset_class = NumpyFSLDataset
+        repack_kwargs = {}
+        if self.dynamic_repacking:
+            from .repack import NumpyFSLDynamicRepackedDataset
+            dataset_class = NumpyFSLDynamicRepackedDataset
+            repack_kwargs = dict(document_metadata_path=self.document_metadata_path,
+                                 num_documents=self.num_documents,
+                                 document_metadata_digest=self.document_metadata_digest)
+        dataset = dataset_class(
             *paths,
             sequence_length=self.sequence_length,
             max_target_sequence_length=self.max_target_sequence_length,
@@ -2616,6 +2634,7 @@ class NumpyFSLDatasetConfig(NumpyDatasetConfig):
             bos_token_id=self.tokenizer.bos_token_id,
             instance_filter_config=self.instance_filter_config,
             label_mask_paths=label_masks,
+            **repack_kwargs,
         )
         return self._finalize(dataset)
 

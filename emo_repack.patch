@@ -1,0 +1,275 @@
+--- a/src/olmo_core/data/data_loader.py
++++ b/src/olmo_core/data/data_loader.py
+@@ -36,6 +36,7 @@
+ from ..io import is_url, normalize_path
+ from ..utils import get_default_device, roundrobin, threaded_generator
+ from .collator import DataCollator
++from .repack import NumpyFSLDynamicRepackedDataset
+ from .numpy_dataset import NumpyDatasetBase, NumpyFSLDatasetBase, NumpyVSLDataset
+ from .utils import get_rng, iter_batched, load_array_slice, memmap_to_write
+
+@@ -539,6 +540,8 @@
+         if epoch <= 0:
+             raise ValueError(f"'epoch' must be at least 1, got {epoch}")
+         self._epoch = epoch
++        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
++            self.dataset.repack_for_epoch(epoch, seed=self.seed)
+         self.build_and_save_global_indices(in_memory=in_memory)
+
+     def get_mock_batch(self) -> Dict[str, Any]:
+@@ -752,9 +755,16 @@
+         state_dict["dataset_type"] = "fsl"
+         state_dict["sequence_length"] = self.dataset.sequence_length
+         state_dict["max_target_sequence_length"] = self.dataset.max_target_sequence_length
++        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
++            state_dict["repacking"] = self.dataset.repacking_state()
+         return state_dict
+
+     def load_state_dict(self, state_dict: Dict[str, Any]):
++        epoch = state_dict["epoch"] or 1
++        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
++            self.dataset.load_repacking_state(state_dict.get("repacking"), epoch)
++        elif epoch > 1 and "repacking" in state_dict:
++            raise RuntimeError("cannot restore a repacked later epoch into an ordinary FSL loader")
+         super().load_state_dict(state_dict)
+         # Account for change in batch size / sequence length.
+         self.batches_processed = self.tokens_processed // self.global_batch_size
+--- a/src/olmo_core/data/numpy_dataset.py
++++ b/src/olmo_core/data/numpy_dataset.py
+@@ -2547,6 +2547,11 @@
+     """
+     A source mixture dataset config. If set, the dataset will be built from a mixture of sources.
+     """
++    dynamic_repacking: bool = False
++    """Permute documents and repack sequences after the unchanged first epoch."""
++    document_metadata_path: Optional[str] = None
++    num_documents: Optional[int] = None
++    document_metadata_digest: Optional[str] = None
+
+     @classmethod
+     def from_src_mix(
+@@ -2563,6 +2568,11 @@
+     def validate(self):
+         if self.sequence_length <= 0:
+             raise OLMoConfigurationError("'sequence_length' must be positive")
++        if self.dynamic_repacking:
++            if self.source_mixture_config is not None or self.mix is not None:
++                raise OLMoConfigurationError("repack requires an explicit single-file source")
++            if self.document_metadata_path is None or self.num_documents is None:
++                raise OLMoConfigurationError("repack requires a document metadata path and count")
+         if self.source_mixture_config is not None:
+             if self.paths is not None or self.mix is not None:
+                 raise OLMoConfigurationError(
+@@ -2602,7 +2612,15 @@
+             allow_mix=True, label_mask_paths=self.label_mask_paths
+         )
+
+-        dataset = NumpyFSLDataset(
++        dataset_class = NumpyFSLDataset
++        repack_kwargs = {}
++        if self.dynamic_repacking:
++            from .repack import NumpyFSLDynamicRepackedDataset
++            dataset_class = NumpyFSLDynamicRepackedDataset
++            repack_kwargs = dict(document_metadata_path=self.document_metadata_path,
++                                 num_documents=self.num_documents,
++                                 document_metadata_digest=self.document_metadata_digest)
++        dataset = dataset_class(
+             *paths,
+             sequence_length=self.sequence_length,
+             max_target_sequence_length=self.max_target_sequence_length,
+@@ -2616,6 +2634,7 @@
+             bos_token_id=self.tokenizer.bos_token_id,
+             instance_filter_config=self.instance_filter_config,
+             label_mask_paths=label_masks,
++            **repack_kwargs,
+         )
+         return self._finalize(dataset)
+
+--- /dev/null
++++ b/src/olmo_core/data/repack.py
+@@ -0,0 +1,185 @@
++"""Document repacking adapted from allenai/EMO sewonm/icsl at 6ef92fc3.
++
++Only the dynamic document permutation/gathering implementation is ported. This
++adapter consumes this project's unpadded, single-file token streams, without the
++upstream subset-manifest machinery. Epoch 1 uses the original FSL read path.
++"""
++
++import gzip
++import hashlib
++from copy import deepcopy
++from pathlib import Path
++from typing import Any, Dict, Optional
++
++import numpy as np
++import torch
++
++from ..exceptions import OLMoConfigurationError
++from ..io import is_url
++from .numpy_dataset import NumpyFSLDataset
++from .utils import get_document_lengths, get_rng, load_array_slice_into_tensor
++
++
++class NumpyFSLDynamicRepackedDataset(NumpyFSLDataset):
++    """Keep epoch 1 unchanged; permute whole documents before packing later epochs.
++
++    ``document_metadata_path`` is gzip CSV with one ``start,end`` token span per
++    original document, including its trailing EOS. Boundaries must be recorded
++    during tokenization, not inferred from EOS (which may occur inside text).
++    The underlying token array is never rewritten. As with ordinary FSL, the
++    final partial sequence is dropped, followed by any incomplete global batch.
++    Metadata is only needed when entering epoch 2 or restoring a later epoch.
++    """
++
++    _REPACKING_SEED_DOMAIN = 0x44594E52  # "DYNR", identical to upstream
++    VERSION = 1
++
++    def __init__(self, *paths, document_metadata_path: str,
++                 num_documents: int, document_metadata_digest: Optional[str] = None,
++                 **kwargs):
++        if len(paths) != 1 or is_url(str(paths[0])):
++            raise OLMoConfigurationError("repack requires one local token file")
++        if num_documents <= 0:
++            raise OLMoConfigurationError("repack requires a positive document count")
++        if kwargs.get("label_mask_paths") or kwargs.get("max_target_sequence_length"):
++            raise OLMoConfigurationError("repack does not support label masks or sequence-length warmup")
++        super().__init__(*paths, **kwargs)
++        self.document_metadata_path = Path(document_metadata_path)
++        self.num_documents = num_documents
++        self.document_metadata_digest = document_metadata_digest
++        self._document_offsets = None
++        self._repacked_document_offsets = None
++        self._repacked_cumulative_ends = None
++        self._repacking_epoch = None
++        self._repacking_seed = None
++
++    @property
++    def fingerprint(self) -> str:
++        # Same source contents as FSL: accept an ordinary epoch-1 checkpoint
++        # without ignoring fingerprint checks. Loader state separately validates
++        # the repack version and exact boundary digest for later-epoch resumes.
++        digest = hashlib.sha256(b"class=NumpyFSLDataset")
++        for name in self.fingerprint_fields:
++            digest.update(f"{name}={getattr(self, name)},".encode())
++        for path, size in zip(self.paths, self.file_sizes):
++            digest.update(f"path={Path(path).name},size={size},".encode())
++        return digest.hexdigest()
++
++    @property
++    def repacking_epoch(self):
++        return self._repacking_epoch
++
++    def validate_document_metadata(self) -> np.ndarray:
++        if self._document_offsets is not None:
++            return self._document_offsets
++        path = self.document_metadata_path
++        if not path.is_file():
++            raise FileNotFoundError(
++                f"Missing repack document boundaries: {path}. Before multi-epoch training, "
++                f"run: python scripts/prepare_repack.py --data-dir {Path(self.paths[0]).parent}"
++            )
++        digest = hashlib.sha256()
++        with path.open("rb") as source:
++            for chunk in iter(lambda: source.read(1024 * 1024), b""):
++                digest.update(chunk)
++        checksum = digest.hexdigest()
++        if self.document_metadata_digest is not None and checksum != self.document_metadata_digest:
++            raise OLMoConfigurationError("repack document metadata checksum mismatch")
++
++        def values():
++            with gzip.open(path, "rt") as source:
++                for row, line in enumerate(source):
++                    fields = line.strip().split(",")
++                    if row >= self.num_documents or len(fields) != 2:
++                        raise OLMoConfigurationError("repack metadata document count/format mismatch")
++                    start, end = map(int, fields)
++                    if not 0 <= start < end <= self.file_sizes[0] // self.dtype(0).itemsize:
++                        raise OLMoConfigurationError("invalid repack document span")
++                    yield start
++                    yield end
++
++        offsets = np.fromiter(values(), dtype=np.uint64)
++        if offsets.size != self.num_documents * 2:
++            raise OLMoConfigurationError("repack metadata document count mismatch")
++        offsets = offsets.reshape(-1, 2)
++        starts, ends = offsets[:, 0], offsets[:, 1]
++        if starts[0] != 0 or np.any(starts[1:] != ends[:-1]):
++            raise OLMoConfigurationError("repack requires contiguous document spans starting at token 0")
++        if int(ends[-1]) * self.dtype(0).itemsize != self.file_sizes[0]:
++            raise OLMoConfigurationError("repack document spans do not cover the full token file")
++        self.document_metadata_digest = checksum
++        self._document_offsets = offsets
++        return offsets
++
++    def repack_for_epoch(self, epoch: int, *, seed: int):
++        if epoch <= 0:
++            raise ValueError("epoch must be at least 1")
++        if self._repacking_epoch == epoch and self._repacking_seed == seed:
++            return
++        if epoch == 1:
++            self._repacked_document_offsets = self._repacked_cumulative_ends = None
++        else:
++            offsets = self.validate_document_metadata()
++            order = np.arange(self.num_documents, dtype=np.uint32)
++            rng = get_rng(seed + epoch + self._REPACKING_SEED_DOMAIN)
++            rng.shuffle(order)
++            repacked_offsets = np.take(offsets, order, axis=0)
++            lengths = repacked_offsets[:, 1] - repacked_offsets[:, 0]
++            cumulative_ends = np.cumsum(lengths, dtype=np.uint64)
++            if int(cumulative_ends[-1]) * self.dtype(0).itemsize != self.file_sizes[0]:
++                raise RuntimeError("dynamic repacking changed the token count")
++            self._repacked_document_offsets = repacked_offsets
++            self._repacked_cumulative_ends = cumulative_ends
++        self._repacking_epoch = epoch
++        self._repacking_seed = seed
++
++    def __getitem__(self, index: int) -> Dict[str, Any]:
++        if self._repacking_epoch is None:
++            raise RuntimeError("call data_loader.reshuffle() before reading repacked data")
++        if self._repacking_epoch == 1:
++            return super().__getitem__(index)
++        index = int(index)
++        pos_index = index if index >= 0 else len(self) + index
++        if pos_index < 0 or pos_index >= len(self):
++            raise IndexError(f"{index} is out of bounds for dataset of size {len(self)}")
++
++        logical_start = pos_index * self.sequence_length
++        logical_end = logical_start + self.sequence_length
++        input_ids = torch.empty((self.sequence_length,), dtype=torch.long)
++        write_offset = 0
++        logical_pos = logical_start
++        doc_index = int(np.searchsorted(self._repacked_cumulative_ends, logical_pos, side="right"))
++        previous_end = 0 if doc_index == 0 else int(self._repacked_cumulative_ends[doc_index - 1])
++        offset_in_doc = logical_pos - previous_end
++        while logical_pos < logical_end:
++            source_start, source_end = self._repacked_document_offsets[doc_index]
++            source_start = int(source_start) + offset_in_doc
++            take = min(int(source_end) - source_start, logical_end - logical_pos)
++            input_ids[write_offset:write_offset + take] = load_array_slice_into_tensor(
++                self.paths[0], source_start, source_start + take, self.dtype
++            )
++            write_offset += take
++            logical_pos += take
++            doc_index += 1
++            offset_in_doc = 0
++
++        out: Dict[str, Any] = {"input_ids": input_ids}
++        if self.instance_filter_config is not None:
++            out["instance_mask"] = self._validate_instance(input_ids, self.instance_filter_config)
++        if self._include_instance_metadata:
++            out["metadata"] = deepcopy(self._metadata[0])
++        if self._generate_doc_lengths:
++            out["doc_lens"] = get_document_lengths(input_ids, self.eos_token_id, bos_token_id=self.bos_token_id)
++        return out
++
++    def repacking_state(self):
++        # Epoch 1 requires no sidecar and is safe to branch from old checkpoints.
++        return {"version": self.VERSION, "num_documents": self.num_documents,
++                "document_metadata_digest": self.document_metadata_digest}
++
++    def load_repacking_state(self, state, epoch):
++        if epoch <= 1:
++            return
++        self.validate_document_metadata()
++        if state != self.repacking_state():
++            raise RuntimeError("cannot resume a later epoch with a different repack plan")

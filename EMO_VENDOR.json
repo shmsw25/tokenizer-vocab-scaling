@@ -8,9 +8,27 @@
     "src/olmo_core/nn/transformer/model.py": "2d7d6a3519c992ae574aa911f632017c6ce980009fef0353da4c4c5134c9a20a",
     "src/olmo_core/train/callbacks/wandb.py": "d01760d7e7c3f66d7815298d68b18f113bf8821648ee1eb16e89c5ee1f4ab4f0",
     "src/olmo_core/train/train_module/transformer/train_module.py": "e1c418fc0593c637b3beaec14680bd689c69ace589b9b07c19147895bf9c51e2",
-    "src/olmo_core/nn/attention/te_attn_api.py": "3809d36e9fd780359efbbd7e989fa095649105e2b73a06646880148278e3b580"
+    "src/olmo_core/nn/attention/te_attn_api.py": "3809d36e9fd780359efbbd7e989fa095649105e2b73a06646880148278e3b580",
+    "src/olmo_core/data/data_loader.py": "0054add437969282d4463ed27558cb3d1c0492a075cb0453382f6ef28f2dcac9",
+    "src/olmo_core/data/numpy_dataset.py": "1ac66a7c3f9cf157789247029b7726789023007e8a7642b60df2f1651e0aa4a3",
+    "src/olmo_core/data/repack.py": "7cf68f4cfe8c78be0f9857b69576080d54377858cf262d49e299afb8077d56b4"
   },
   "additional_patches": [
-    "emo_optional_te.patch"
-  ]
+    "emo_optional_te.patch",
+    "emo_repack.patch"
+  ],
+  "repack_source": {
+    "repository": "https://github.com/allenai/EMO",
+    "branch": "sewonm/icsl",
+    "commit": "6ef92fc3a45896a8d734ea4f852a3d35950e4abb",
+    "implementation": "src/olmo_core/data/numpy_dataset.py::NumpyFSLDynamicRepackedDataset",
+    "source_file_sha256": "3d367368d2bde9827363c249af125572a45598f2e9b1b7553109cfa5819cbbf9",
+    "patch": "emo_repack.patch",
+    "adaptations": [
+      "One unpadded uint32 file plus exact gzip CSV document spans; no subset-manifest machinery.",
+      "Epoch 1 delegates to the original FSL reader and retains the original content fingerprint.",
+      "Keep existing incomplete-sequence/global-batch dropping; do not add alignment padding.",
+      "Load/validate document spans only for later epochs; validate repack identity on checkpoint resume."
+    ]
+  }
 }

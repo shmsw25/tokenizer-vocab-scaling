@@ -15,6 +15,8 @@ The assignment depends only on the seed and document order, so every tokenizer
 gets the same split of the same raw data.
 """
 import argparse
+import gzip
+import hashlib
 import json
 import random
 import shutil
@@ -25,6 +27,17 @@ import numpy as np
 from tokenizers import Tokenizer
 
 from train_tokenizer import EOS, data_files, iter_texts
+from scripts.prepare_repack import publish_metadata
+
+
+def tokenized_documents(files, tokenizer, eos, eval_fraction, seed, batch_size=256):
+    """Shared by initial tokenization and exact legacy document-boundary recovery."""
+    rng = random.Random(seed)
+    texts = iter_texts(files)
+    while batch := list(islice(texts, batch_size)):
+        for text, encoded in zip(batch, tokenizer.encode_batch(batch, add_special_tokens=False)):
+            split = 'eval' if rng.random() < eval_fraction else 'train'
+            yield split, text, encoded.ids + [eos]
 
 
 def main():
@@ -48,20 +61,25 @@ def main():
     files = data_files(args.data)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    rng = random.Random(args.seed)
     stats = {'train': {'documents': 0, 'bytes': 0, 'tokens': 0},
              'eval': {'documents': 0, 'bytes': 0, 'tokens': 0}}
+    hashes = {split: hashlib.sha256() for split in stats}
     with (args.output_dir / 'train.bin').open('wb') as train, \
-            (args.output_dir / 'eval.bin').open('wb') as evaluation:
+            (args.output_dir / 'eval.bin').open('wb') as evaluation, \
+            gzip.open(args.output_dir / 'train.documents.csv.gz.part', 'wt') as train_docs, \
+            gzip.open(args.output_dir / 'eval.documents.csv.gz.part', 'wt') as eval_docs:
         outputs = {'train': train, 'eval': evaluation}
-        texts = iter_texts(files)
-        while batch := list(islice(texts, args.batch_size)):
-            for text, encoded in zip(batch, tokenizer.encode_batch(batch, add_special_tokens=False)):
-                split = 'eval' if rng.random() < args.eval_fraction else 'train'
-                np.asarray(encoded.ids + [eos], dtype=np.uint32).tofile(outputs[split])
-                stats[split]['documents'] += 1
-                stats[split]['bytes'] += len(text.encode('utf-8'))
-                stats[split]['tokens'] += len(encoded.ids) + 1
+        documents = {'train': train_docs, 'eval': eval_docs}
+        for split, text, ids in tokenized_documents(files, tokenizer, eos, args.eval_fraction,
+                                                    args.seed, args.batch_size):
+            tokens = np.asarray(ids, dtype=np.uint32).tobytes()
+            outputs[split].write(tokens)
+            hashes[split].update(tokens)
+            start = stats[split]['tokens']
+            documents[split].write(f'{start},{start + len(ids)}\n')
+            stats[split]['documents'] += 1
+            stats[split]['bytes'] += len(text.encode('utf-8'))
+            stats[split]['tokens'] += len(ids)
             done = stats['train']['documents'] + stats['eval']['documents']
             if done % (args.batch_size * 1000) == 0:
                 print(f'{done:,} documents', flush=True)
@@ -77,6 +95,7 @@ def main():
         **stats,
     }
     shutil.copyfile(args.tokenizer, args.output_dir / 'tokenizer.json')
+    publish_metadata(args.output_dir, stats, hashes)
     # meta.json is written last and marks the directory as complete.
     meta_partial = args.output_dir / 'meta.json.part'
     meta_partial.write_text(json.dumps(meta, indent=2) + '\n')

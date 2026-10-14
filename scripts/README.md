@@ -234,6 +234,35 @@ Very short smoke runs without a full-LR/decay transition record `not_applicable`
 Continuation from this branch point into a longer schedule is a separate run;
 repeating the original command resumes its latest checkpoint as usual.
 
+Repack is the default training data loader. The document-permutation and gathering
+code comes from EMO `sewonm/icsl` at `6ef92fc3a45896a8d734ea4f852a3d35950e4abb`;
+the rest of that branch is not imported. Epoch 1 uses the original FSL reader,
+instance shuffle, and incomplete-sequence/global-batch dropping, so the current
+single-epoch study is unchanged. From epoch 2, whole documents are deterministically
+reshuffled using the upstream seed domain, then concatenated into new fixed-length
+sequences. Source token files are never rewritten. Later-epoch resumes verify the
+repack version and boundary checksum; old FSL epoch-1 checkpoints remain compatible.
+
+New tokenization records exact spans in `train.documents.csv.gz` and
+`eval.documents.csv.gz`, with checksums/counts in `repack.json`. Existing single-epoch
+runs need no sidecars. Before using an existing token stream for **multi-epoch**
+training, run this CPU-only command on a machine with the Weka mount:
+
+```bash
+python scripts/prepare_repack.py --data-dir \
+  /oe-training-default/sewonm/tokenizer_project/tokenized_data/default_5GB_32000
+```
+
+This replays the saved tokenizer and train/eval split against the original raw pool,
+compares every token, and publishes only document metadata. It never modifies
+`train.bin`, `eval.bin`, or `meta.json`; failed `.part` metadata is retained for
+inspection. An EOS scan is insufficient because EOS can occur inside a document.
+Multi-epoch training fails before its first update if valid spans are unavailable.
+For an explicit ordinary-loader ablation, set `training.data_loader` to `fsl` in
+the model config, or pass `--data-loader fsl` directly to `train.py`. The effective
+loader is recorded in checkpoint configs and training metrics. Existing model
+path fingerprints and submitted immutable code snapshots remain unchanged.
+
 Ratios are measured by tokenization over the same raw corpus, including one EOS
 per document. The job validates corpus/split agreement and token file sizes,
 then writes the resolved `launch_config.json` before invoking `torchrun`.

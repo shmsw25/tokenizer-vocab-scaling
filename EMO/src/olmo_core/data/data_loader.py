@@ -36,6 +36,7 @@ from ..exceptions import OLMoConfigurationError
 from ..io import is_url, normalize_path
 from ..utils import get_default_device, roundrobin, threaded_generator
 from .collator import DataCollator
+from .repack import NumpyFSLDynamicRepackedDataset
 from .numpy_dataset import NumpyDatasetBase, NumpyFSLDatasetBase, NumpyVSLDataset
 from .utils import get_rng, iter_batched, load_array_slice, memmap_to_write
 
@@ -539,6 +540,8 @@ class NumpyDataLoaderBase(TextDataLoaderBase):
         if epoch <= 0:
             raise ValueError(f"'epoch' must be at least 1, got {epoch}")
         self._epoch = epoch
+        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
+            self.dataset.repack_for_epoch(epoch, seed=self.seed)
         self.build_and_save_global_indices(in_memory=in_memory)
 
     def get_mock_batch(self) -> Dict[str, Any]:
@@ -752,9 +755,16 @@ class NumpyFSLDataLoader(NumpyDataLoaderBase):
         state_dict["dataset_type"] = "fsl"
         state_dict["sequence_length"] = self.dataset.sequence_length
         state_dict["max_target_sequence_length"] = self.dataset.max_target_sequence_length
+        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
+            state_dict["repacking"] = self.dataset.repacking_state()
         return state_dict
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
+        epoch = state_dict["epoch"] or 1
+        if isinstance(self.dataset, NumpyFSLDynamicRepackedDataset):
+            self.dataset.load_repacking_state(state_dict.get("repacking"), epoch)
+        elif epoch > 1 and "repacking" in state_dict:
+            raise RuntimeError("cannot restore a repacked later epoch into an ordinary FSL loader")
         super().load_state_dict(state_dict)
         # Account for change in batch size / sequence length.
         self.batches_processed = self.tokens_processed // self.global_batch_size

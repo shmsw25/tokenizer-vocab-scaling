@@ -44,6 +44,23 @@ def load_meta(data_dir):
     return json.loads(meta_path.read_text())
 
 
+def training_dataset(data_dir, meta, *, data_loader='repack', **dataset_kwargs):
+    """Default to repack without changing epoch 1 or existing output fingerprints."""
+    if data_loader not in ('repack', 'fsl'):
+        raise ValueError(f'Unknown data loader: {data_loader}')
+    repack_kwargs = {}
+    if data_loader == 'repack':
+        sidecar = Path(data_dir) / 'repack.json'
+        provenance = json.loads(sidecar.read_text()) if sidecar.is_file() else {}
+        repack_kwargs = dict(
+            dynamic_repacking=True,
+            document_metadata_path=str(Path(data_dir) / 'train.documents.csv.gz'),
+            num_documents=meta['train']['documents'],
+            document_metadata_digest=provenance.get('train', {}).get('sha256'))
+    return NumpyFSLDatasetConfig(
+        paths=[str(Path(data_dir) / 'train.bin')], **dataset_kwargs, **repack_kwargs).build()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config', type=Path, required=True)
@@ -56,11 +73,14 @@ def main():
     parser.add_argument('--gradient-accumulation-steps', type=int)
     parser.add_argument('--learning-rate', type=float)
     parser.add_argument('--max-steps', type=int, help='Stop after this many steps instead of the configured epochs')
+    parser.add_argument('--data-loader', choices=['repack', 'fsl'],
+                        help='Default: training.data_loader in config, otherwise repack')
     parser.add_argument('--run-name', help='W&B run name; defaults to the output directory name')
     cli = parser.parse_args()
 
     cfg = json.loads(cli.config.read_text())
     t = cfg['training']
+    t['data_loader'] = cli.data_loader or t.get('data_loader', 'repack')
     for key in ('micro_batch_size', 'gradient_accumulation_steps', 'learning_rate', 'max_steps'):
         if getattr(cli, key) is not None:
             t[key] = getattr(cli, key)
@@ -123,7 +143,12 @@ def main():
         module = module_cfg.build(model)
         dataset_kwargs = dict(sequence_length=seq_length, tokenizer=tokenizer,
                               work_dir=str(work_dir), dtype='uint32')
-        dataset = NumpyFSLDatasetConfig(paths=[str(paths[0])], **dataset_kwargs).build()
+        dataset = training_dataset(data_dir, meta, data_loader=t['data_loader'], **dataset_kwargs)
+        first_epoch_steps = len(dataset) // global_batch_size
+        extends_epoch_one = (t['max_steps'] > first_epoch_steps if t.get('max_steps') is not None
+                             else t.get('epochs', 1) > 1)
+        if t['data_loader'] == 'repack' and extends_epoch_one:
+            dataset.validate_document_metadata()
         loader = NumpyDataLoaderConfig(
             global_batch_size=global_batch_size * seq_length, seed=t['seed'],
             num_workers=t.get('num_workers', 2)).build(dataset, dp_process_group=module.dp_process_group)
@@ -165,6 +190,7 @@ def main():
                 'flops_per_token': model.num_flops_per_token(seq_length),
                 'latest_metrics': trainer.callbacks['report_metrics'].latest,
                 'sequence_length': seq_length, 'global_batch_size': global_batch_size,
+                'data_loader': t['data_loader'],
                 'pre_decay_checkpoint': json.loads((output_dir / 'pre_decay_checkpoint.json').read_text()),
             })
     finally:

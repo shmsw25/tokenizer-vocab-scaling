@@ -35,7 +35,10 @@ with `emo_tied_embeddings.patch` already applied. The patch adds tied
 input/output embeddings and makes gradient accumulation sync gradients once
 per optimizer step under DDP. `emo_optional_te.patch` lets the selected PyTorch
 attention backend load when optional Transformer Engine CUDA libraries are unavailable;
-explicit Transformer Engine selection still fails. `EMO_VENDOR.json` records provenance and hashes;
+explicit Transformer Engine selection still fails. `emo_repack.patch` ports document
+repacking from `sewonm/icsl`: epoch 1 is unchanged; later epochs reshuffle whole
+documents before forming sequences. Repack is the default training loader.
+`EMO_VENDOR.json` records provenance and hashes;
 setup verifies the patched files. No submodule or extra clone is needed.
 Use `./setup_env.sh cpu` for the CPU-only data/tokenizer dependencies.
 
