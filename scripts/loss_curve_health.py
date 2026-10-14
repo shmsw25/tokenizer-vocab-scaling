@@ -8,8 +8,9 @@ import statistics
 
 
 POLICY = {
-    'version': 1, 'metric': 'train/CE loss', 'warmup_grace_steps': 100,
-    'baseline_observations': 100, 'loss_multiple': 2.0, 'minimum_increase': 1.0,
+    'version': 2, 'metric': 'train/CE loss', 'warmup_grace_steps': 100,
+    'baseline_observations': 100, 'loss_multiple': 1.5, 'minimum_increase': 1.0,
+    'sustained_consecutive_observations': 5,
     'episode_gap_steps': 100, 'severe_loss_multiple': 3.0,
     'severe_minimum_increase': 3.0, 'severe_consecutive_observations': 3,
     'action': 'invalidate_clear_explosions_review_borderline',
@@ -43,16 +44,19 @@ def analyze_history(rows, warmup_steps=192):
     baseline = deque(maxlen=POLICY['baseline_observations'])
     spikes, nonfinite = [], []
     severe_streak, longest_severe_streak = 0, 0
+    spike_streak, longest_spike_streak = 0, 0
     previous_step = None
     for step, value in sorted(points.items()):
         if not math.isfinite(value):
             nonfinite.append(step)
             severe_streak = 0
+            spike_streak = 0
             continue
-        severe = False
+        severe = spike = False
         if step >= warmup_steps + POLICY['warmup_grace_steps'] and len(baseline) == baseline.maxlen:
             reference = statistics.median(baseline)
             if value >= POLICY['loss_multiple'] * reference and value - reference >= POLICY['minimum_increase']:
+                spike = True
                 spikes.append({'step': step, 'loss': value, 'preceding_median': reference,
                                'multiple': value / reference if reference > 0 else None})
                 severe = (value >= POLICY['severe_loss_multiple'] * reference
@@ -60,6 +64,8 @@ def analyze_history(rows, warmup_steps=192):
         # Require adjacent optimizer steps, so sparse observations cannot manufacture persistence.
         severe_streak = (severe_streak + 1 if previous_step == step - 1 else 1) if severe else 0
         longest_severe_streak = max(longest_severe_streak, severe_streak)
+        spike_streak = (spike_streak + 1 if previous_step == step - 1 else 1) if spike else 0
+        longest_spike_streak = max(longest_spike_streak, spike_streak)
         previous_step = step
         baseline.append(value)
     episodes = []
@@ -74,13 +80,15 @@ def analyze_history(rows, warmup_steps=192):
             episode['peak'] = point
     finite = [(step, v) for step, v in sorted(points.items()) if math.isfinite(v)]
     return {'policy': dict(POLICY), 'warmup_steps': warmup_steps,
-            'status': ('unhealthy' if longest_severe_streak >= POLICY['severe_consecutive_observations']
+            'status': ('unhealthy' if (longest_severe_streak >= POLICY['severe_consecutive_observations']
+                                      or longest_spike_streak >= POLICY['sustained_consecutive_observations'])
                        else 'review_needed' if spikes or nonfinite else 'no_spike_detected' if finite else 'unavailable'),
             'observations': len(finite), 'missing_values': missing,
             'first_step': finite[0][0] if finite else None,
             'last_step': finite[-1][0] if finite else None,
             'nonfinite_steps': nonfinite, 'spike_observations': len(spikes),
-            'longest_severe_streak': longest_severe_streak, 'episodes': episodes}
+            'longest_severe_streak': longest_severe_streak,
+            'longest_spike_streak': longest_spike_streak, 'episodes': episodes}
 
 
 def history_paths(node):

@@ -21,11 +21,33 @@ def test_clear_explosion_stays_unhealthy_after_recovery_and_gray_area_is_review_
     clear = analyze_history(curve())
     assert clear['status'] == 'unhealthy' and clear['longest_severe_streak'] == 3
     assert clear['last_step'] == 600 and clear['episodes'][0]['peak']['step'] == 400
-    gray = analyze_history(curve(7., 8))
+    gray = analyze_history(curve(5.43, 2))
     assert gray['status'] == 'review_needed'
     assert not invalid_result({'loss_curve_review': gray})
     assert invalid_result({'loss_curve_review': clear})
     assert not invalid_result({'loss_curve_review': clear, 'loss_health_decision': {'status': 'valid'}})
+
+
+def test_sustained_smaller_spikes_like_cs48vsyq_are_unhealthy_but_brief_spikes_need_review():
+    # The user example rose from ~3.13 to 5.43, with 14 adjacent steps above
+    # 1.5x baseline. A recovered endpoint must not erase this smaller explosion.
+    rows = [{'_step': i, 'train/CE loss': 5.43 if 400 <= i < 414 else 3.13}
+            for i in range(1, 601)]
+    result = analyze_history(rows)
+    assert result['status'] == 'unhealthy'
+    assert result['longest_spike_streak'] == 14
+    assert result['longest_severe_streak'] == 0
+    assert analyze_history(curve(5.43, 5))['status'] == 'unhealthy'
+    assert analyze_history(curve(5.43, 4))['status'] == 'review_needed'
+    # Large relative increases alone at low CE do not satisfy the absolute floor.
+    low = [{'_step': i, 'train/CE loss': 1.6 if 400 <= i < 420 else 1.}
+           for i in range(1, 601)]
+    assert analyze_history(low)['status'] == 'no_spike_detected'
+    # Missing steps and explicit nonfinite values break persistence.
+    interrupted = [r for r in curve(5.43, 9) if r['_step'] != 404]
+    assert analyze_history(interrupted)['status'] == 'review_needed'
+    interrupted.append({'_step': 404, 'train/CE loss': float('nan')})
+    assert analyze_history(interrupted)['status'] == 'review_needed'
 
 
 def test_normal_noise_warmup_nulls_and_sparse_history_do_not_auto_invalidate():

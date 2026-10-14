@@ -101,10 +101,12 @@ applies the same decay to both. EmbedWD is a run hyperparameter, displayed besid
 LR, WD, and BS in the existing pool/model/vocabulary report groups.
 
 The campaign also audits the full W&B `train/CE loss` history, including earlier
-attempts of resumed runs. After warmup plus 100 steps, a loss at least twice the
+attempts of resumed runs. After warmup plus 100 steps, a loss at least 1.5 times the
 preceding 100-observation median and at least 1 CE higher is flagged for review.
-Three adjacent optimizer steps each at least three times that median and 3 CE
-higher automatically mark a run unhealthy, even if it later recovers. These are
+Five adjacent optimizer steps meeting both thresholds automatically mark the run
+unhealthy. Three adjacent steps each at least three times the median and 3 CE
+higher also invalidate it. This includes smaller sustained spikes like W&B
+`cs48vsyq` (3.13 to 5.43 CE), even if the run later recovers. These are
 operational thresholds, not a statistical test. Human decisions take precedence.
 Unhealthy scores are blank in the report and excluded from plots and selection;
 raw results and evidence remain in downloadable provenance. Borderline review
