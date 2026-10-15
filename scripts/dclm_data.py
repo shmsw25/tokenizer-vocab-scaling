@@ -148,16 +148,22 @@ def sample_shard(folder, source, item, url=None):
         return info
 
 
-def sample_shard_with_retry(folder, source, item):
-    for attempt in range(4):
+def sample_shard_with_retry(folder, source, item, report_reuse=False):
+    # A brief cluster DNS outage must not discard an hour-long scan allocation.
+    # Keep the retries bounded; published shard hashes and sampling stay unchanged.
+    attempts = 8
+    marker = Path(folder) / (hashlib.sha256(item['path'].encode()).hexdigest() + '.json')
+    reused = marker.exists()
+    for attempt in range(attempts):
         try:
-            return sample_shard(folder, source, item)
+            part = sample_shard(folder, source, item)
+            return (part, reused) if report_reuse else part
         except (OSError, EOFError, zstandard.ZstdError) as error:
             # Retry only transient I/O/decompression failures, never bad hashes or data.
             emit(stage='download', shard=item['path'], attempt=attempt + 1, error=type(error).__name__)
-            if attempt == 3:
+            if attempt == attempts - 1:
                 raise
-            time.sleep(min(30, 2 ** (attempt + 1)))
+            time.sleep(min(60, 2 ** (attempt + 1)))
 
 
 def assemble_parent(folder, source, parts):
@@ -268,22 +274,25 @@ def download(root, workers=8):
         files = load_inventory(folder, source)
         emit(stage='download', shards_total=len(files), compressed_bytes_total=source['compressed_bytes'],
              workers=workers, sampling_fraction=source['sampling_fraction'])
-        done = records = scanned = compressed_bytes = 0
+        done = records = scanned = compressed_bytes = new_compressed_bytes = 0
         by_path = {}
         with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(sample_shard_with_retry, folder / 'sampled_shards', source, f): f
+            futures = {executor.submit(sample_shard_with_retry, folder / 'sampled_shards', source, f, True): f
                        for f in files}
             try:
                 for future in as_completed(futures):
                     item = futures[future]
-                    part = future.result()
+                    part, reused = future.result()
                     by_path[item['path']] = part
                     done += 1
                     records += part['records']
                     scanned += part['source_records']
                     compressed_bytes += item['size']
+                    if not reused:
+                        new_compressed_bytes += item['size']
                     emit(stage='download', shards_done=done, shards_total=len(files),
                          compressed_bytes_done=compressed_bytes, compressed_bytes_total=source['compressed_bytes'],
+                         new_compressed_bytes_done=new_compressed_bytes,
                          records=records, source_records=scanned)
             except BaseException:
                 for future in futures:

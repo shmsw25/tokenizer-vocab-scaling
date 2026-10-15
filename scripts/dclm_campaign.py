@@ -45,6 +45,10 @@ def validate_scope(state):
 
 def collect_progress(state, folder):
     for key, node in state['nodes'].items():
+        node.pop('scan_eta_seconds', None)
+        node.pop('eta_note', None)
+        if node.get('monitor_error') or node['status'] not in ('running', 'succeeded', 'failed', 'canceled'):
+            continue
         path = folder / 'logs' / f'{key}.json'
         if not path.exists():
             continue
@@ -59,13 +63,17 @@ def collect_progress(state, folder):
         if observations:
             latest = observations[-1]
             node['dclm_progress'] = latest
+            completed = [x for x in observations if x['stage'] == 'download' and 'compressed_bytes_done' in x]
+            if completed:
+                node['dclm_last_completed_shard_progress'] = completed[-1]
             previous = [x for x in observations if x['stage'] == latest['stage'] and x['time'] < latest['time'] - 60]
-            if previous and latest['stage'] == 'download' and 'compressed_bytes_done' in latest:
-                first = next((x for x in previous if 'compressed_bytes_done' in x), None)
-                if first and latest['compressed_bytes_done'] > first['compressed_bytes_done']:
-                    rate = (latest['compressed_bytes_done'] - first['compressed_bytes_done']) / (latest['time'] - first['time'])
+            if node['status'] == 'running' and previous and latest['stage'] == 'download' and 'compressed_bytes_done' in latest:
+                rate_field = 'new_compressed_bytes_done' if 'new_compressed_bytes_done' in latest else 'compressed_bytes_done'
+                first = next((x for x in previous if x.get(rate_field, 0) > 0), None)
+                if first and latest[rate_field] > first[rate_field]:
+                    rate = (latest[rate_field] - first[rate_field]) / (latest['time'] - first['time'])
                     node['scan_eta_seconds'] = (latest['compressed_bytes_total'] - latest['compressed_bytes_done']) / rate
-                    node['eta_note'] = 'Recent compressed-byte throughput; excludes assembly/pools/tokenizers; variable shard/network cost'
+                    node['eta_note'] = 'Recent new compressed-byte throughput (cache reuse excluded); excludes assembly/pools/tokenizers; variable shard/network cost'
 
 
 def main():
@@ -97,7 +105,14 @@ def main():
             refresh(state, args.state.parent)
             collect_progress(state, args.state.parent)
         for key in args.retry_node:
+            progress = {field: state['nodes'][key][field] for field in
+                        ('dclm_progress', 'dclm_last_completed_shard_progress', 'scan_eta_seconds', 'eta_note')
+                        if field in state['nodes'][key]}
             retry_node(state, key)
+            if state['nodes'][key].get('previous_attempts'):
+                state['nodes'][key]['previous_attempts'][-1].update(progress)
+            for field in progress:
+                state['nodes'][key].pop(field, None)
         write_json(args.state, state)
         if args.advance:
             submit_ready(state, args.state, max_submissions=args.max_submissions)

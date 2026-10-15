@@ -3,6 +3,8 @@ import copy
 import json
 from pathlib import Path
 import sys
+import socket
+import urllib.error
 
 import numpy as np
 import pytest
@@ -28,11 +30,68 @@ def sampled_fixture(root):
         item = {'path': f'shard-{shard}.jsonl.zst', 'size': compressed.stat().st_size,
                 'blob_id': str(shard), 'sha256': d.sha256_file(compressed)}
         part = d.sample_shard(folder / 'sampled_shards', source, item, compressed.as_uri())
-        assert d.sample_shard(folder / 'sampled_shards', source, item, compressed.as_uri()) == part
+        assert d.sample_shard(folder / 'sampled_shards', source, item, 'no-network-should-be-needed') == part
         parts.append(part)
     sample = d.assemble_parent(folder, source, parts)
     parent = d.create_100gb_parent(folder, sample, target_bytes=50_000)
     return sample, parent, parts
+
+
+def test_transient_dns_recovers_beyond_four_attempts_without_retrying_corruption(monkeypatch):
+    calls, sleeps = [], []
+    def temporary_failure(*args):
+        calls.append(args)
+        if len(calls) < 6:
+            raise urllib.error.URLError(socket.gaierror(socket.EAI_AGAIN, 'Temporary failure in name resolution'))
+        return {'records': 7}
+    monkeypatch.setattr(d, 'sample_shard', temporary_failure)
+    monkeypatch.setattr(d.time, 'sleep', sleeps.append)
+    assert d.sample_shard_with_retry('folder', {'sampling_seed': 42}, {'path': 'shard'}) == {'records': 7}
+    assert len(calls) == 6 and sum(sleeps) > 14 and max(sleeps) <= 60
+    calls.clear(); sleeps.clear()
+    def always_offline(*args):
+        calls.append(args)
+        raise urllib.error.URLError('offline')
+    monkeypatch.setattr(d, 'sample_shard', always_offline)
+    with pytest.raises(urllib.error.URLError):
+        d.sample_shard_with_retry('folder', {}, {'path': 'shard'})
+    assert len(calls) == 8 and len(sleeps) == 7
+    def corrupt(*args):
+        raise ValueError('checksum mismatch')
+    monkeypatch.setattr(d, 'sample_shard', corrupt)
+    sleeps.clear()
+    with pytest.raises(ValueError, match='checksum'):
+        d.sample_shard_with_retry('folder', {}, {'path': 'shard'})
+    assert not sleeps
+
+
+def test_scan_eta_never_survives_failure_or_queued_retry(tmp_path):
+    folder = tmp_path / 'logs'; folder.mkdir()
+    observations = [{'stage': 'download', 'time': t, 'compressed_bytes_done': done,
+                     'compressed_bytes_total': 1000} for t,done in [(100, 100), (200, 200)]]
+    d.write_json(folder / 'dclm-download.json', [{'message': 'DCLM_PROGRESS '+json.dumps(x)} for x in observations])
+    state = {'nodes': {'dclm-download': {'status': 'running'}}}
+    controller.collect_progress(state, tmp_path)
+    node = state['nodes']['dclm-download']
+    assert node['scan_eta_seconds'] == 800
+    node['status'] = 'failed'
+    controller.collect_progress(state, tmp_path)
+    assert 'scan_eta_seconds' not in node and node['dclm_last_completed_shard_progress'] == observations[-1]
+    node.clear(); node.update(status='queued', scan_eta_seconds=800)
+    controller.collect_progress(state, tmp_path)
+    assert 'scan_eta_seconds' not in node and 'dclm_progress' not in node
+    node.update(status='running')
+    for observation in observations:
+        observation['new_compressed_bytes_done'] = 0
+    d.write_json(folder / 'dclm-download.json', [{'message': 'DCLM_PROGRESS '+json.dumps(x)} for x in observations])
+    controller.collect_progress(state, tmp_path)
+    assert 'scan_eta_seconds' not in node  # cached shard checks are not download throughput
+    observations += [{'stage': 'download', 'time': t, 'compressed_bytes_done': done,
+                      'new_compressed_bytes_done': new, 'compressed_bytes_total': 1000}
+                     for t, done, new in [(300, 600, 50), (400, 650, 100)]]
+    d.write_json(folder / 'dclm-download.json', [{'message': 'DCLM_PROGRESS '+json.dumps(x)} for x in observations])
+    controller.collect_progress(state, tmp_path)
+    assert node['scan_eta_seconds'] == 700
 
 
 def test_document_sampling_parent_and_independent_measured_pools(tmp_path):
