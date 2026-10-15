@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import campaign
 import submit
+from chain_status import log_records, read_log_snapshots
 
 
 @pytest.mark.parametrize('failure,expected', [
@@ -77,3 +78,27 @@ def test_chained_spec_keeps_training_recipe_and_uses_one_gpu_for_legacy_postproc
         assert {'name':'TOKENIZER_CHAIN_EVALUATION','value':'1'} in task['envVars']
         assert '--chain-evaluation' not in task['arguments']
         assert task['arguments'][0]==stage
+
+
+def test_large_chain_snapshot_is_bounded_and_hash_verified():
+    value = {'current_stage':'evaluate-model','summaries':{'train-model':{'text':'한글' * 20000}},
+             'branch_checkpoints':{'one':{'path':'checkpoint', 'verified':True}}}
+    records = log_records(value)
+    assert len(records) > 1 and all(len(x.encode()) < 8000 for x in records)
+    lines = [{'message':x,'timestamp':'now'} for x in records]
+    assert read_log_snapshots(lines) == ([value], [])
+    assert read_log_snapshots(lines[:-1])[0] == []
+    damaged = [dict(x) for x in lines]
+    chunk = json.loads(damaged[0]['message'].split(' ',1)[1])
+    chunk['payload'] = 'eA=='
+    damaged[0]['message'] = 'PIPELINE_CHAIN_PART ' + json.dumps(chunk)
+    snapshots, warnings = read_log_snapshots(damaged)
+    assert not snapshots and warnings[-1]['error'] == 'ValueError'
+
+
+def test_old_timestamp_corruption_does_not_block_final_artifact_refresh():
+    value={'current_stage':'evaluate-model','summaries':{'train-model':{'stage':'train-model'}}}
+    lines=[{'message':log_records(value)[0]},
+           {'message':'PIPELINE_CHAIN {"summaries":{2026-10-14T23:44:47Z "bad":1}}','timestamp':'now'}]
+    snapshots, warnings=read_log_snapshots(lines)
+    assert snapshots==[value] and warnings[0]['error']=='JSONDecodeError'

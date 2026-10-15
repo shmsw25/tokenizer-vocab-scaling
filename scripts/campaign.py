@@ -417,11 +417,13 @@ def refresh(state, folder):
                     node['progress'] = {'text': node['job_status'].get('failedSchedulingMessage', 'Queued'),
                                         'eta': 'Unknown queue wait'}
                 if node.get('chain_evaluation'):
+                    from chain_status import read_log_snapshots
                     snapshot = node.get('chain_snapshot', {'current_stage': node['stage'], 'summaries': {}})
-                    for line in lines:
-                        for fragment in line['message'].splitlines():
-                            if fragment.startswith('PIPELINE_CHAIN '):
-                                snapshot = json.loads(fragment[len('PIPELINE_CHAIN '):])
+                    snapshots, warnings = read_log_snapshots(lines)
+                    if snapshots:
+                        snapshot = snapshots[-1]
+                    if warnings:
+                        node['chain_log_warnings'] = warnings
                     if workload_status == 'succeeded':
                         dataset = b.workload.get_results(workload)
                         for stage in MODEL_STAGES[MODEL_STAGES.index(node['stage']):]:
