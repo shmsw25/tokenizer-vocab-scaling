@@ -190,8 +190,87 @@ def trend_decision(state):
             'decided_at': now()}
 
 
+def allocation_finished(state, key, workload_id):
+    """Require terminal evidence for the exact allocation, including its chain."""
+    node = state['nodes'].get(key, {})
+    status = node.get('chain_job_status', None if node.get('chain_evaluation') else node.get('status'))
+    return bool(workload_id and node.get('receipt', {}).get('workload_id') == workload_id
+                and not node.get('monitor_error')
+                and status in ('succeeded', 'failed', 'canceled'))
+
+
+def training_gate_ready(state, node):
+    """Enforce delayed starts and unhealthy-only fallbacks at admission as well."""
+    if node.get('training_start_gate'):
+        cohort = state.get('study', {}).get(node['training_start_gate'], {})
+        gate = cohort.get('gate', {})
+        if not cohort.get('enabled') or not (gate.get('released_at') or (
+                'allocations' in gate and all(allocation_finished(state, item['key'], item['workload_id'])
+                                             for item in gate['allocations']))):
+            return False
+    previous = node.get('unhealthy_predecessor')
+    if previous:
+        parent = state['nodes'].get(previous['key'], {})
+        if (not invalid_result(parent) or parent.get('user_hold')
+                or parent.get('failure_investigation', {}).get('status') == 'unresolved'
+                or not allocation_finished(state, previous['key'], previous['workload_id'])):
+            return False
+    return True
+
+
+def advance_small_10gb_lr_descent(state, required):
+    """The user's bounded, per-vocabulary 5e-4 -> 2e-4 -> 1e-4 experiment."""
+    study, nodes = state['study'], state['nodes']
+    cohort = study.get('small_10gb_lr_descent', {})
+    if not cohort.get('enabled'):
+        return
+    gate = cohort['gate']
+    if not gate.get('released_at') and training_gate_ready(state, {'training_start_gate': 'small_10gb_lr_descent'}):
+        gate['released_at'] = now()
+        gate['terminal_evidence'] = [{**item, 'status': nodes[item['key']].get(
+            'chain_job_status', nodes[item['key']]['status'])} for item in gate['allocations']]
+    rates = (.0005, .0002, .0001)
+    for vocab in (32000, 64000, 128000):
+        coordinate = f'10GB:small:{vocab}'
+        runs = cohort.setdefault('runs', {}).setdefault(coordinate, [])
+        if not runs:
+            runs.append(model_run(state, '10GB', 'small', vocab, rates[0], role='small_10gb_lr_descent'))
+        for key in runs:
+            nodes[key]['training_start_gate'] = 'small_10gb_lr_descent'
+            if invalid_result(nodes[key]):
+                required.discard(eval_key(key))
+            else:
+                required.add(eval_key(key))
+        key = runs[-1]
+        node = nodes[key]
+        status = 'waiting_for_current_training' if not gate.get('released_at') else 'in_progress'
+        if invalid_result(node):
+            status = 'waiting_for_unhealthy_stop'
+            workload_id = node.get('receipt', {}).get('workload_id')
+            if (gate.get('released_at') and not node.get('user_hold')
+                    and node.get('failure_investigation', {}).get('status') != 'unresolved'
+                    and allocation_finished(state, key, workload_id)):
+                index = rates.index(float(arg(node, '--learning-rate')))
+                if index + 1 < len(rates):
+                    next_key = model_run(state, '10GB', 'small', vocab, rates[index + 1], role='small_10gb_lr_descent')
+                    nodes[next_key].update(training_start_gate='small_10gb_lr_descent',
+                        unhealthy_predecessor={'key': key, 'workload_id': workload_id})
+                    runs.append(next_key)
+                    required.add(eval_key(next_key))
+                    status = 'fallback_pending'
+                else:
+                    status = 'exhausted_unhealthy'
+        elif node.get('user_hold') or node.get('hold_reason'):
+            status = 'held'
+        elif node['status'] in ('failed', 'canceled'):
+            status = 'needs_diagnosis'
+        elif (completed_score(node) is not None and nodes[eval_key(key)]['status'] == 'succeeded'):
+            status = 'complete'
+        cohort.setdefault('status', {})[coordinate] = status
+
+
 def advance_pool_lr_search(state, vocabs, required):
-    """Run both authorized rates per larger-pool coordinate, reusing matching runs."""
+    """Compare only authorized larger-pool candidates, reusing matching runs."""
     study, nodes = state['study'], state['nodes']
     search = study['pool_lr_search']
     ready = True
@@ -203,6 +282,8 @@ def advance_pool_lr_search(state, vocabs, required):
                          if model in study.get('fixed_learning_rates', {}) else search['learning_rates'])
                 keys = [model_run(state, pool, model, vocab, lr, role='pool_lr_trial')
                         for lr in rates if learning_rate_allowed(state, lr)]
+                keys += [key for key in study.get('small_10gb_lr_descent', {}).get('runs', {}).get(coordinate, [])
+                         if key not in keys and not excluded_run(state, nodes[key])]
                 if not keys:
                     ready = False
                     continue
@@ -273,6 +354,7 @@ def advance_plan(state):
     nodes = state['nodes']
     vocabs = study['cohorts'][-1]
     required = {key for key in study['required'] if not excluded_run(state, nodes[key])}
+    advance_small_10gb_lr_descent(state, required)
     all_selected = True
     for model in MODELS:
         for vocab in vocabs:

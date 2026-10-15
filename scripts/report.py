@@ -187,7 +187,9 @@ def build_report_data(state):
             chosen_lr = fixed_lr
         elif group[0]['pool'] in pool_search.get('pools', []):
             # Compare the authorized rates on this pool's validation split only.
-            eligible = [r for r in eligible if r['lr'] in pool_search['learning_rates']]
+            coordinate = f"{group[0]['pool']}:{group[0]['model']}:{group[0]['vocab']}"
+            additional = state.get('study', {}).get('small_10gb_lr_descent', {}).get('runs', {}).get(coordinate, [])
+            eligible = [r for r in eligible if r['lr'] in pool_search['learning_rates'] or r['id'] in additional]
             chosen_lr = None
         else:
             chosen_lr = state.get('study', {}).get('selected', {}).get(f"{group[0]['model']}:{group[0]['vocab']}", {}).get('lr')

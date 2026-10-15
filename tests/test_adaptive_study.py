@@ -31,6 +31,130 @@ def finish(state, key, loss):
     state['nodes'][key].update(status='succeeded', summary={'training': {'latest_metrics': {'validation_bpb': loss}}})
 
 
+def descent_fixture():
+    s = fixture()
+    gate_key = 'train-small-5gb-32000'
+    s['nodes'][gate_key].update(status='running', chain_job_status='running')
+    s['study']['small_10gb_lr_descent'] = {'enabled': True, 'gate': {
+        'allocations': [{'key': gate_key, 'workload_id': gate_key}]}}
+    s['study']['pool_lr_search'] = {'pools': ['10GB', '20GB'], 'learning_rates': [.001]}
+    s['study']['validation_node'] = 'prepare-validation'
+    s['nodes']['prepare-validation'] = {'stage': 'prepare-validation', 'status': 'succeeded',
+                                      'arguments': [], 'dependencies': []}
+    return s, gate_key
+
+
+def test_small_10gb_descent_waits_for_exact_running_allocations_and_preserves_recipe():
+    s, gate_key = descent_fixture()
+    required = set()
+    study.advance_small_10gb_lr_descent(s, required)
+    cohort = s['study']['small_10gb_lr_descent']
+    keys = [runs[0] for runs in cohort['runs'].values()]
+    campaign.prepare_chains(s)
+    assert len(keys) == 3
+    assert not set(keys) & set(campaign.ready_nodes(s))
+    # Finishing training alone is insufficient: the shared allocation is live.
+    s['nodes'][gate_key]['status'] = 'succeeded'
+    study.advance_small_10gb_lr_descent(s, required)
+    assert not cohort['gate'].get('released_at')
+    s['nodes'][gate_key].pop('chain_job_status')
+    assert not set(keys) & set(campaign.ready_nodes(s))
+    s['nodes'][gate_key]['chain_job_status'] = 'canceled'
+    s['nodes'][gate_key]['receipt']['workload_id'] = 'different-replacement'
+    assert not set(keys) & set(campaign.ready_nodes(s))
+    s['nodes'][gate_key]['receipt']['workload_id'] = gate_key
+    s['nodes'][gate_key]['monitor_error'] = 'inventory unavailable'
+    assert not set(keys) & set(campaign.ready_nodes(s))
+    s['nodes'][gate_key].pop('monitor_error')
+    study.advance_small_10gb_lr_descent(s, required)
+    assert cohort['gate']['released_at']
+    assert set(keys) <= set(campaign.ready_nodes(s))
+    for key in keys:
+        n = s['nodes'][key]
+        assert n['model_size'] == 'small' and n['data_size'] == '10GB'
+        assert study.arg(n, '--learning-rate') == '0.0005'
+        assert study.arg(n, '--embedding-weight-decay', '.1') == '.1'
+        assert study.arg(n, '--validation-id') == 'dolma100m-v1'
+        assert n['arguments'][1:] == s['nodes'][study.eval_key(key)]['arguments'][1:]
+        args = submit.parser().parse_args([*n['arguments'], *campaign.placement_arguments(n)])
+        spec = submit.parse_spec(submit.make_spec(args)).to_json()['tasks'][0]
+        assert spec['resources']['gpuCount'] == 8
+        assert spec['context']['minRuntime'] == 10_800_000_000_000
+        assert n['placement_clusters'] == ['ai2/jupiter', 'ai2/saturn', 'ai2/neptune']
+        assert args.batch_size == 128 and args.micro_batch_size == 16
+    # User holds remain effective after the start gate opens.
+    s['nodes'][keys[0]]['hold_reason'] = 'User hold'
+    assert keys[0] not in campaign.ready_nodes(s)
+
+
+def test_small_10gb_fallback_is_per_vocab_unhealthy_terminal_and_bounded():
+    s, gate_key = descent_fixture()
+    s['nodes'][gate_key].update(status='succeeded', chain_job_status='succeeded')
+    required = set()
+    study.advance_small_10gb_lr_descent(s, required)
+    cohort = s['study']['small_10gb_lr_descent']
+    runs = cohort['runs']['10GB:small:32000']
+    node = s['nodes'][runs[0]]
+    node.update(status='failed', receipt={'workload_id': 'initial'})
+    # Setup failures, review flags, unresolved failures and ongoing stops do not trigger.
+    node['loss_curve_review'] = {'status': 'review_needed'}
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 1
+    node['loss_health_decision'] = {'status': 'unhealthy'}
+    node['failure_investigation'] = {'status': 'unresolved'}
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 1
+    node.pop('failure_investigation')
+    node['chain_job_status'] = 'stopping'
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 1
+    node['chain_job_status'] = 'canceled'
+    node['user_hold'] = True
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 1
+    node.pop('user_hold')
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 2
+    assert study.arg(s['nodes'][runs[-1]], '--learning-rate') == '0.0002'
+    assert study.eval_key(runs[0]) not in required
+    assert study.eval_key(runs[-1]) in required
+    assert len(cohort['runs']['10GB:small:64000']) == 1
+    assert study.training_gate_ready(s, s['nodes'][runs[-1]])
+    node['loss_health_decision']['status'] = 'valid'
+    assert not study.training_gate_ready(s, s['nodes'][runs[-1]])
+    node['loss_health_decision']['status'] = 'unhealthy'
+    for rate in (.0002, .0001):
+        key = runs[-1]
+        assert float(study.arg(s['nodes'][key], '--learning-rate')) == rate
+        s['nodes'][key].update(status='canceled', chain_job_status='canceled',
+            receipt={'workload_id': key}, loss_health_decision={'status': 'unhealthy'})
+        study.advance_small_10gb_lr_descent(s, required)
+    assert len(runs) == 3
+    assert cohort['status']['10GB:small:32000'] == 'exhausted_unhealthy'
+    before = len(s['nodes'])
+    study.advance_small_10gb_lr_descent(s, required)
+    assert len(s['nodes']) == before
+    assert all(study.eval_key(k) not in required for k in runs)
+
+
+def test_lower_pool_candidates_do_not_release_old_holds_or_expand_other_coordinates():
+    s, gate_key = descent_fixture()
+    s['nodes'][gate_key].update(status='succeeded', chain_job_status='succeeded')
+    old = study.model_run(s, '10GB', 'small', 32000, .001, role='existing')
+    s['nodes'][old]['hold_reason'] = 'User deferred'
+    required = set()
+    study.advance_small_10gb_lr_descent(s, required)
+    key = s['study']['small_10gb_lr_descent']['runs']['10GB:small:32000'][0]
+    finish(s, key, .8)
+    s['nodes'][study.eval_key(key)]['status'] = 'succeeded'
+    assert not study.advance_pool_lr_search(s, [32000, 64000, 128000], required)
+    assert study.eval_key(old) in required
+    assert s['nodes'][old]['hold_reason'] == 'User deferred'
+    assert s['study']['pool_lr_search']['runs']['10GB:small:32000'] == [old, key]
+    lower = [n for n in s['nodes'].values() if n.get('study_role') == 'small_10gb_lr_descent']
+    assert len(lower) == 9 and all(n['model_size'] == 'small' and n['data_size'] == '10GB' for n in lower)
+
+
 def test_lr_bracket_and_transfer_without_retuning():
     s = fixture();study.advance_plan(s)
     assert len([n for n in s['nodes'].values() if n.get('study_role') == 'lr_trial' and n['stage']=='train-model']) == 9

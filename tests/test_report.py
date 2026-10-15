@@ -26,6 +26,25 @@ def metadata(tokens=10_000_000, ratio=.25):
             'eval': {'tokens': 100_000, 'bytes': 400_000, 'documents': 10}}
 
 
+def test_report_selects_only_authorized_lower_pool_trials_and_honors_user_verdict():
+    import adaptive_study as study
+    state = state_fixture()
+    study.initialize(state)
+    state['study']['pool_lr_search'] = {'pools': ['10GB', '20GB'], 'learning_rates': [.001]}
+    old = study.model_run(state, '10GB', 'small', 128000, .001, role='existing')
+    lower = study.model_run(state, '10GB', 'small', 128000, .0005, role='small_10gb_lr_descent')
+    unrelated = study.model_run(state, '10GB', 'small', 128000, .0002, role='unapproved')
+    state['study']['small_10gb_lr_descent'] = {'runs': {'10GB:small:128000': [lower]}}
+    for key, score in [(old, .7), (lower, .8), (unrelated, .6)]:
+        state['nodes'][key].update(status='succeeded', reported_metrics={'validation_bpb': score})
+    state['nodes'][old]['loss_health_decision'] = {'status': 'unhealthy', 'source': 'user'}
+    data = report.build_report_data(state)
+    assert lower in data['selected'] and old not in data['selected'] and unrelated not in data['selected']
+    invalid = next(row for row in data['runs'] if row['id'] == old)
+    assert invalid['status'] == 'unhealthy'
+    assert all(value is None for value in invalid['metrics'].values())
+
+
 def test_exact_emo_compute_and_epoch_tail():
     node = state_fixture()['nodes']['train-small-5gb-32000']
     cfg = report.run_config(node)
