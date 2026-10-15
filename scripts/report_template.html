@@ -41,6 +41,11 @@ label{font-size:12px;color:var(--muted)}.filters{display:flex;flex-wrap:wrap;ali
 <p class="note">Training split only, before dropping the incomplete final batch. Parentheses show the percentage change relative to 32K for the same pool; negative values mean fewer tokens.</p>
 <div class="table-wrap"><table><thead id="training-token-head"></thead><tbody id="training-token-rows"></tbody></table></div>
 </section>
+<section id="model-parameters">
+<h2>Model parameters</h2>
+<p class="note">Total trainable parameters, in millions (M). Tied input embeddings and output weights are counted once. Counts are the same across data pools, learning rates, and EmbedWD settings. Hover over a value for the exact count.</p>
+<div class="table-wrap"><table><thead id="model-parameter-head"></thead><tbody id="model-parameter-rows"></tbody></table></div>
+</section>
 <section id="run-grid">
 <div class="section-head"><h2>Run coordinate grid</h2><span class="note" id="run-total"></span><button id="download">Download report data</button></div>
 <p class="note">Grouped by pool, then model size and vocabulary. Each run shows LR, WD, BS (global batch in sequences), EmbedWD (weight decay on the tied embedding/output matrix), state, and five metrics. Green borders mark the validation-selected completed run.</p>
@@ -85,6 +90,8 @@ if(data.study){$('lr-selection').hidden=false;$('brian-reference').hidden=false;
 $('training-token-head').innerHTML=`<tr><th>Pool</th>${data.token_vocab_labels.map(v=>`<th>${esc(v)}</th>`).join('')}</tr>`;
 const percentChange=x=>x==null?'—':`${x<0?'−':x>0?'+':''}${Math.abs(x).toFixed(2)}%`;
 $('training-token-rows').innerHTML=data.training_tokens.map(row=>`<tr><td>${esc(row.pool)}</td>${data.token_vocab_labels.map(v=>`<td>${integer(row.tokens[v])} <span class="muted">(${percentChange(row.change_vs_32k_pct[v])})</span></td>`).join('')}</tr>`).join('');
+$('model-parameter-head').innerHTML=`<tr><th>Model</th>${data.parameter_vocab_labels.map(v=>`<th>${esc(v)}</th>`).join('')}</tr>`;
+$('model-parameter-rows').innerHTML=data.model_parameters.map(row=>`<tr><td>${esc(row.model)}</td>${data.parameter_vocab_labels.map(v=>{const count=row.parameters[v];return `<td title="${count==null?'Unavailable':integer(count)+' parameters'}">${count==null?'—':(count/1e6).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+'M'}</td>`;}).join('')}</tr>`).join('');
 $('download').addEventListener('click',()=>{const {figures,...payload}=data;const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='tokenizer-study-results.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 for(const [id,values] of [['pool-filter',data.pools],['model-filter',[...new Set(data.runs.map(r=>r.model))]],['vocab-filter',[...new Set(data.runs.map(r=>r.vocab_label))]]]){$(id).insertAdjacentHTML('beforeend',values.map(v=>`<option>${esc(v)}</option>`).join(''));}
 function coordinate(r){const m=r.metrics;const marked=selected.has(r.id)&&r.training_status==='completed'&&r.result_valid&&m.validation_bpb!=null;

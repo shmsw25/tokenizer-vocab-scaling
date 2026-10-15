@@ -107,6 +107,7 @@ def build_report_data(state):
         counts.append({'pool': pool, 'total': len(ns), **{k: count[k] for k in
                        ('completed', 'running', 'queued', 'planned', 'failed', 'canceled')}})
     runs = []
+    parameter_counts = defaultdict(dict)
     for key, node in nodes.items():
         if node['stage'] != 'train-model' or (node['status'] == 'canceled' and not node.get('unhealthy_stop')):
             continue
@@ -130,6 +131,13 @@ def build_report_data(state):
             shared = node.get('shared_validation') or evaluation.get('summary', {}).get('shared_validation', {})
             metrics['dolma_bpb'] = shared.get('metrics', {}).get('validation_bpb')
         budget = compute_budget(node, cfg, streams.get((pool, vocab), {}), streams.get((pool, 32000), {}))
+        parameters = budget.get('parameters')
+        if parameters is None:
+            parameters = model_compute(json.dumps(cfg['model'], sort_keys=True), vocab,
+                                       cfg['seq_length'])['parameters']
+        if vocab in parameter_counts[model] and parameter_counts[model][vocab] != parameters:
+            raise ValueError(f'Parameter counts differ across runs for {model}/{vocab}')
+        parameter_counts[model][vocab] = parameters
         raw_metrics = dict(metrics)
         invalid = invalid_result(node)
         training_status = display_status(node['status'])
@@ -201,6 +209,11 @@ def build_report_data(state):
             for label, tokens in row['tokens'].items()}
     return {'tokenizers': counts, 'runs': runs, 'selected': selected, 'pools': pools,
             'training_tokens': training_tokens, 'token_vocab_labels': [vocab_label(v) for v in vocabs],
+            'model_parameters': [{'model': model, 'parameters': {
+                vocab_label(vocab): count for vocab, count in parameter_counts[model].items()}}
+                for model in MODEL_ORDER if model in parameter_counts],
+            'parameter_vocab_labels': [vocab_label(v) for v in sorted({
+                vocab for counts in parameter_counts.values() for vocab in counts})],
             'metric_labels': {k: ('Shared validation Dolma BPB ↓' if k == 'dolma_bpb'
                 and state.get('study', {}).get('dolma_validation_id') else v[0])
                 for k, v in METRICS.items()
