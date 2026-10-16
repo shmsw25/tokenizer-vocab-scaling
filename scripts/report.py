@@ -177,7 +177,8 @@ def build_report_data(state, dclm_state=None):
         raw_metrics = dict(metrics)
         invalid = invalid_result(node)
         training_status = display_status(node['status'])
-        review_needed = node.get('loss_curve_review', {}).get('status') == 'review_needed'
+        review_needed = (node.get('loss_curve_review', {}).get('status') == 'review_needed'
+                         or node.get('gradient_curve_review', {}).get('status') == 'review_needed')
         if invalid:
             metrics = {name: None for name in metrics}
         runtime_batch = node.get('runtime_batch') or node.get('summary', {}).get('training', {}).get('runtime_batch') or {}
@@ -186,6 +187,7 @@ def build_report_data(state, dclm_state=None):
                      'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
                      'result_valid': not invalid,
                      'loss_curve_review': node.get('loss_curve_review'),
+                     'gradient_curve_review': node.get('gradient_curve_review'),
                      'loss_health_decision': node.get('loss_health_decision'),
                      'unhealthy_stop': node.get('unhealthy_stop'),
                      'eval_status': display_status(evaluation.get('status', 'pending')),

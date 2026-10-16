@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import adaptive_study as study
@@ -206,7 +207,8 @@ def test_discovery_uses_published_links_and_caches_terminal_beaker_fallback(tmp_
     assert logged_wandb_links([{'message': 'https://beaker.org/ex/workload'}]) == {}
 
 
-def test_controller_stops_only_current_unhealthy_training_and_preserves_children(monkeypatch, tmp_path):
+@pytest.mark.parametrize('review_field', ['loss_curve_review', 'gradient_curve_review'])
+def test_controller_stops_only_current_unhealthy_training_and_preserves_children(monkeypatch, tmp_path, review_field):
     from beaker import Beaker, BeakerWorkloadStatus
     from google.protobuf import json_format
     from unittest.mock import MagicMock
@@ -215,6 +217,8 @@ def test_controller_stops_only_current_unhealthy_training_and_preserves_children
              chain_job_status='running', chain_snapshot={'current_stage':'train-model','summaries':{}},
              loss_curve_review={'status':'unhealthy','sources':[{'history_sha256':'evidence'}]},
              previous_attempts=[{'receipt':{'workload_id':'old'}}])
+    if review_field == 'gradient_curve_review':
+        n['gradient_curve_review'] = n.pop('loss_curve_review')
     child = study.eval_key(key)
     s['nodes'][child].update(chain_parent=key, receipt={'workload_id':'current'})
     s['nodes']['validation-live'] = {'stage':'validate-model','status':'running',
@@ -240,7 +244,7 @@ def test_controller_stops_only_current_unhealthy_training_and_preserves_children
     receipt=copy.deepcopy(n['receipt']); history=copy.deepcopy(n['previous_attempts'])
     campaign.stop_unhealthy_training(s,path)
     assert n['status']=='canceled' and n['chain_job_status']=='canceled'
-    assert n['unhealthy_stop']['confirmed_at'] and persisted[0]['loss_curve_review']['status']=='unhealthy'
+    assert n['unhealthy_stop']['confirmed_at'] and persisted[0][review_field]['status']=='unhealthy'
     assert n['receipt']==receipt and n['previous_attempts']==history
     assert s['nodes'][child]['unhealthy_stop_parent']==key and s['nodes'][child]['hold_reason']
     assert all(s['nodes'][k]==v for k,v in untouched.items())

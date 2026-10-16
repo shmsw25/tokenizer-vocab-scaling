@@ -540,6 +540,7 @@ def live_gpu_budget(state):
 def monitor_wandb(state):
     """Read the actual W&B runs as well as retaining the in-job loss guard."""
     from loss_curve_health import discover_beaker_history, history_paths, needs_review, review_node
+    import gradient_health
     from pipeline import REPO
     cache_dir = REPO / '.build/loss-curve-health/histories'
     candidates = [n for n in state['nodes'].values() if n['stage'] == 'train-model'
@@ -566,7 +567,7 @@ def monitor_wandb(state):
             state.pop('loss_history_discovery_error', None)
     targets = [n for n in candidates if history_paths(n)
                and (n['status'] not in ('succeeded', 'failed', 'canceled')
-                    or not n.get('wandb_final_checked') or needs_review(n))]
+                    or not n.get('wandb_final_checked') or needs_review(n) or gradient_health.needs_review(n))]
     if not targets:
         return
     try:
@@ -587,9 +588,14 @@ def monitor_wandb(state):
                     metrics = dict(run.summary)
                     node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
                         'metrics': {k: v for k, v in metrics.items() if k in
-                            ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/grad_norm', '_step')
+                            ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/total grad norm', '_step')
                             and isinstance(v, (int, float)) and math.isfinite(v)}}
                 review_node(node, api, cache_dir, now(), current_run=run)
+                try:
+                    gradient_health.review_node(node, api, cache_dir / 'gradient', now(), current_run=run)
+                except Exception as error:
+                    node.setdefault('gradient_curve_review', {})['error'] = type(error).__name__ + ': gradient history query failed'
+                    failed.append(type(error).__name__)
                 if node['status'] in ('succeeded', 'failed', 'canceled'):
                     node['wandb_final_checked'] = True
             except Exception as error:

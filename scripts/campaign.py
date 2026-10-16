@@ -528,10 +528,13 @@ def stop_unhealthy_training(state, state_path):
                              'receipt': copy.deepcopy(node['receipt']), 'prior_status': before_status,
                              'reason': 'Stop training classified unhealthy under the user-authorized loss policy',
                              'loss_curve_review': copy.deepcopy(node.get('loss_curve_review')),
+                             'gradient_curve_review': copy.deepcopy(node.get('gradient_curve_review')),
                              'loss_health_decision': copy.deepcopy(node.get('loss_health_decision'))}
                     archive = state_path.parent / 'unhealthy-stops' / hashlib.sha256(wid.encode()).hexdigest()
                     event['history_archives'] = []
-                    for source in (event['loss_curve_review'] or {}).get('sources', []):
+                    sources = [*(event['loss_curve_review'] or {}).get('sources', []),
+                               *(event['gradient_curve_review'] or {}).get('sources', [])]
+                    for source in sources:
                         if source.get('history_file') and source.get('history_sha256'):
                             try:
                                 payload = Path(source['history_file']).read_bytes()

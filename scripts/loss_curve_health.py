@@ -25,7 +25,8 @@ def invalid_result(node):
         return decision == 'unhealthy'
     if node.get('health_stop', {}).get('classification') == 'unhealthy':
         return True
-    return node.get('loss_curve_review', {}).get('status') == 'unhealthy'
+    return (node.get('loss_curve_review', {}).get('status') == 'unhealthy'
+            or node.get('gradient_curve_review', {}).get('status') == 'unhealthy')
 
 
 def spike_flags(value, reference):

@@ -203,11 +203,12 @@ class LossHealthCallback(Callback):
     curve_values: list = field(default_factory=list)
     spike_streak: int = 0
     severe_streak: int = 0
+    gradient_state: dict = field(default_factory=dict)
 
     def state_dict(self):
         return {k: getattr(self, k) for k in ('values', 'best', 'previous_median',
                 'high_since', 'last_recovery_step', 'last_step',
-                'curve_values', 'spike_streak', 'severe_streak')}
+                'curve_values', 'spike_streak', 'severe_streak', 'gradient_state')}
 
     def load_state_dict(self, state_dict):
         for key in self.state_dict():
@@ -221,8 +222,24 @@ class LossHealthCallback(Callback):
         self.stopped = False
         self.curve_values = []
         self.spike_streak = self.severe_streak = 0
+        self.gradient_state = {}
 
     def log_metrics(self, step, metrics):
+        if get_rank() == 0 and not self.stopped:
+            from scripts.gradient_health import POLICY as GRADIENT_POLICY, observe
+            if GRADIENT_POLICY['metric'] in metrics:
+                gradient = observe(self.gradient_state, step, metrics[GRADIENT_POLICY['metric']], self.warmup_steps)
+                if gradient and (gradient['status'] == 'unhealthy' or gradient.get('nonfinite')):
+                    from scripts.pipeline import write_json
+                    reason = ('Non-finite total gradient norm' if gradient.get('nonfinite')
+                              else 'Unhealthy total gradient norm spike at least 10x preceding 100-observation median')
+                    record = {'step': step, 'reason': reason, 'policy_version': 4,
+                              'classification': 'unhealthy',
+                              'gradient_curve_evidence': {'policy': dict(GRADIENT_POLICY), **gradient}}
+                    write_json(Path(self.output_dir) / 'health_stop.json', record)
+                    print('HEALTH_STOP ' + json.dumps(record), flush=True)
+                    self.stopped = True
+                    self.trainer.cancel_run(reason)
         if get_rank() != 0 or 'train/CE loss' not in metrics or self.stopped or step <= self.last_step:
             return
         from scripts.loss_curve_health import POLICY, spike_flags
@@ -267,7 +284,7 @@ class LossHealthCallback(Callback):
         if reason:
             from scripts.pipeline import write_json
             record = {'step': step, 'reason': reason, 'loss': value if math.isfinite(value) else None,
-                      'policy_version': 3, 'classification': 'unhealthy',
+                      'policy_version': 4, 'classification': 'unhealthy',
                       'loss_curve_evidence': curve_evidence, 'window_size': self.window_size,
                       'loss_multiple': self.loss_multiple, 'patience_steps': self.patience_steps,
                       'recovery_grace_steps': self.recovery_grace_steps,
