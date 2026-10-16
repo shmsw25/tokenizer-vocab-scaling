@@ -142,3 +142,42 @@ def test_gradient_verdict_triggers_only_authorized_terminal_small_10gb_fallback(
     study.advance_small_10gb_lr_descent(s, required)
     assert len(runs) == 2 and float(study.arg(s['nodes'][runs[-1]], '--learning-rate')) == .0002
     assert len(s['study']['small_10gb_lr_descent']['runs']['10GB:small:64000']) == 1
+
+
+def test_training_hold_blocks_future_training_but_preserves_cpu_and_validation(monkeypatch, tmp_path):
+    import campaign
+    stages = ('train-model', 'validate-model', 'convert-model', 'tokenize-data')
+    s = {'study': {'training_submission_hold': {'reason': 'User asked to wait'}},
+         'nodes': {stage: {'stage': stage, 'status': 'pending', 'dependencies': [], 'arguments': []}
+                   for stage in stages}}
+    assert set(campaign.ready_nodes(s)) == set(stages) - {'train-model'}
+    # Admission checks the hold again even if a stale candidate list includes training.
+    monkeypatch.setattr(campaign, 'ready_nodes', lambda state: ['train-model'])
+    import adaptive_study
+    def no_budget_query(state): raise AssertionError('Held training reached admission')
+    monkeypatch.setattr(adaptive_study, 'live_gpu_budget', no_budget_query)
+    before = copy.deepcopy(s)
+    campaign.submit_ready(s, tmp_path / 'state.json')
+    assert s == before
+
+
+def test_confirmed_manually_deleted_held_jobs_keep_receipts_without_recreation(monkeypatch, tmp_path):
+    from beaker import Beaker
+    from unittest.mock import MagicMock
+    import campaign
+    node = {'stage': 'train-model', 'status': 'canceled', 'user_hold': True,
+            'receipt': {'workload_id': 'deleted'}, 'user_hold_cancellation': {
+                'workload_id': 'deleted', 'workload_lookup': 'not_found', 'confirmed_at': 'now',
+                'job_status': {'status': 'STATUS_CANCELED'}}}
+    state = {'workspace': 'workspace', 'owner': 'owner', 'nodes': {'training': node}}
+    before = copy.deepcopy(node)
+    client = MagicMock(); client.__enter__.return_value = client
+    monkeypatch.setattr(Beaker, 'from_env', lambda **kwargs: client)
+    campaign.refresh(state, tmp_path)
+    client.workload.get.assert_not_called()
+    assert node == before
+    node['user_hold_cancellation']['workload_id'] = 'wrong'
+    client.workload.get.side_effect = ValueError('Unconfirmed receipt')
+    campaign.refresh(state, tmp_path)
+    client.workload.get.assert_called_once_with('deleted')
+    assert node['monitor_error']

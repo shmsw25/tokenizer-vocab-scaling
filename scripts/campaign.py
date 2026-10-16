@@ -142,6 +142,7 @@ def ready_nodes(state):
         return []
     ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
+            and not (node['stage'] == 'train-model' and state.get('study', {}).get('training_submission_hold'))
             and not node.get('hold_reason') and not excluded_run(state, node) and not invalid_result(node)
             and training_gate_ready(state, node)
             and all(dependency_ready(state, node, dep) for dep in node['dependencies'])]
@@ -343,6 +344,13 @@ def refresh(state, folder):
         for key, node in state['nodes'].items():
             if node.get('chain_parent'):
                 continue  # The owner refreshes every stage from this one job.
+            cancellation = node.get('user_hold_cancellation', {})
+            if (node.get('user_hold') and node['status'] == 'canceled'
+                    and cancellation.get('workload_id') == node.get('receipt', {}).get('workload_id')
+                    and cancellation.get('workload_lookup') == 'not_found'
+                    and cancellation.get('confirmed_at')
+                    and cancellation.get('job_status', {}).get('status') == 'STATUS_CANCELED'):
+                continue  # Retained job record confirmed manual deletion; never recreate it.
             if not node.get('receipt') and not node.get('name'):
                 continue
             if (node['status'] in TERMINAL and (node.get('summary') or key == 'download')
@@ -455,6 +463,8 @@ def submit_ready(state, path, max_submissions=None):
         if max_submissions is not None and submitted >= max_submissions:
             break
         node = state['nodes'][key]
+        if node['stage'] == 'train-model' and state.get('study', {}).get('training_submission_hold'):
+            continue
         if any(state['nodes'][dep].get('monitor_error') for dep in node['dependencies']):
             continue
         if state.get('study'):
