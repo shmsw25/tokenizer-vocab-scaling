@@ -21,11 +21,11 @@ WARMUP_SEQUENCES = 24 * 1024
 DEFAULT_BATCH_SIZE = 128
 MODEL_MICROBATCHES = {'small': 16, 'medium': 16, 'medium_large': 8}
 MODEL_STAGES = ('train-model', 'convert-model', 'evaluate-model')
-DCLM_STAGES = ('download-dclm', 'sample-dclm', 'train-dclm-tokenizer')
+DCLM_STAGES = ('download-dclm', 'sample-dclm', 'train-dclm-tokenizer', 'tokenize-dclm-data')
 RAW_STAGES = ('download-data', 'sample-pool', 'prepare-validation', 'download-dclm', 'sample-dclm')
 POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
 TRAINING_POOLS = ('5GB', '10GB', '20GB')
-STAGES = (*RAW_STAGES, 'train-tokenizer', 'train-dclm-tokenizer', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
+STAGES = (*RAW_STAGES, 'train-tokenizer', 'train-dclm-tokenizer', 'tokenize-dclm-data', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
 EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
@@ -103,7 +103,7 @@ def validate_args(args):
         raise ValueError('--root must be absolute')
     if args.stage in ('download-data', 'prepare-validation', 'download-dclm', 'sample-dclm'):
         return
-    if args.stage == 'train-dclm-tokenizer' and (args.data_size not in TRAINING_POOLS or args.vocab_size not in (32000, 64000, 128000)):
+    if args.stage in ('train-dclm-tokenizer', 'tokenize-dclm-data') and (args.data_size not in TRAINING_POOLS or args.vocab_size not in (32000, 64000, 128000)):
         raise ValueError('DCLM preparation is limited to 5/10/20GB and 32K/64K/128K tokenizers')
     if args.stage == 'sample-pool':
         if Decimal(args.data_size[:-2]) > 100:

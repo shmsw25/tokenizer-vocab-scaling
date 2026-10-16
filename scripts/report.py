@@ -96,7 +96,43 @@ def compute_budget(node, cfg, meta, baseline):
     return result
 
 
-def build_report_data(state):
+def dclm_training_tokens(state):
+    """Only display exact counts from completed, identity-checked CPU streams."""
+    rows = []
+    for pool in ('5GB', '10GB', '20GB'):
+        counts, totals, evaluation = {}, {}, {}
+        reference = None
+        for vocab in (32000, 64000, 128000):
+            label = vocab_label(vocab)
+            counts[label] = totals[label] = evaluation[label] = None
+            node = state['nodes'].get(f'dclm-tokens-{pool.lower()}-{vocab}', {})
+            if node.get('status') != 'succeeded' or node.get('monitor_error'):
+                continue
+            info = node['summary']['tokenization']
+            meta = node['summary']['meta']
+            raw = state['nodes']['dclm-pools']['summary']['pools'][pool]
+            tokenizer = state['nodes'][f'dclm-bpe-{pool.lower()}-{vocab}']['summary']['tokenizer']
+            if (info['meta'] != meta or info['recipe']['pool'] != raw
+                    or info['recipe']['tokenizer_sha256'] != tokenizer['output']['sha256']
+                    or meta['vocab_size'] != vocab or meta['seed'] != 42 or meta['eval_fraction'] != .01
+                    or meta['eos_token_id'] != 0
+                    or any(info['verified'].get(k) is not True for k in
+                           ('full_pool', 'token_stream_hashes', 'document_metadata_hashes', 'tokenizer_hash'))
+                    or sum(meta[s]['bytes'] for s in ('train', 'eval')) != raw['text_bytes']
+                    or sum(meta[s]['documents'] for s in ('train', 'eval')) != raw['records']
+                    or sum(meta[s]['tokens'] for s in ('train', 'eval')) != info['total_tokens']):
+                raise ValueError(f'DCLM token count identity mismatch: {pool}/{vocab}')
+            identity = (meta['data_files'], [(meta[s]['bytes'], meta[s]['documents']) for s in ('train', 'eval')])
+            if reference is not None and identity != reference:
+                raise ValueError(f'DCLM train/eval documents differ across vocabularies: {pool}')
+            reference = identity
+            counts[label], totals[label], evaluation[label] = meta['train']['tokens'], info['total_tokens'], meta['eval']['tokens']
+        rows.append({'dataset': 'DCLM', 'pool': pool, 'tokens': counts,
+                     'all_tokens': totals, 'eval_tokens': evaluation})
+    return rows
+
+
+def build_report_data(state, dclm_state=None):
     nodes = state['nodes']
     streams = {(n.get('data_size'), n['vocab_size']): n.get('summary', {}).get('meta', {})
                for n in nodes.values() if n['stage'] == 'tokenize-data' and n['status'] == 'succeeded'}
@@ -201,9 +237,11 @@ def build_report_data(state):
     pools = state.get('training_pools', ['100GB'])
     runs.sort(key=lambda r: (pools.index(r['pool']), MODEL_ORDER.index(r['model']), r['vocab'], r['lr'], r['wd'], r['batch_size'], r['embedding_wd'], r['id']))
     vocabs = sorted({n['vocab_size'] for n in nodes.values() if n['stage'] == 'tokenize-data'})
-    training_tokens = [{'pool': pool, 'tokens': {
+    training_tokens = [{'dataset': 'Dolma', 'pool': pool, 'tokens': {
         vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')
         for vocab in vocabs}} for pool in pools]
+    if dclm_state and dclm_state.get('study', {}).get('tokenization', {}).get('enabled'):
+        training_tokens.extend(dclm_training_tokens(dclm_state))
     for row in training_tokens:
         baseline = row['tokens'].get('32K')
         row['change_vs_32k_pct'] = {
@@ -282,7 +320,11 @@ def render_report(state, destination):
     else:
         state['complete'] = bool(evaluations) and all(n['status'] == 'succeeded' for n in state['nodes'].values()) and all(
             set(EVALS) <= set(n.get('summary', {}).get('metrics', {})) for n in evaluations)
-    data = build_report_data(state)
+    dclm_file = destination.parent / 'dclm-preparation' / 'campaign.json'
+    dclm_state = json.loads(dclm_file.read_text()) if dclm_file.exists() else None
+    data = build_report_data(state, dclm_state)
+    if dclm_state:
+        data['dclm_campaign'] = dclm_state
     data['figures'] = build_figures(data)
     if state.get('study'):
         data['horizon_figures'] = {f'{h:g}': build_figures(data, h) for h in (.05, .1, .2, .4, 1.)}

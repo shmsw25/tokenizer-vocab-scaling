@@ -1,7 +1,7 @@
 """Pinned, document-uniform DCLM sampling and CPU-only tokenizer preparation.
 
-No model training or token-stream stages are dispatched here. Only sampled
-documents persist on Weka; compressed input shards are transient local files.
+No model training is dispatched here. Sampled documents, tokenizers and token
+streams persist on Weka; compressed input shards are transient local files.
 """
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
@@ -434,6 +434,80 @@ def train_bpe(root, pool, vocab):
         return info
 
 
+def tokenized_path(root, pool, vocab):
+    return Path(root) / 'tokenized_data_dclm' / f'default_{pool}_{vocab}'
+
+
+def verify_token_stream(directory, pool_info, vocab, tokenizer_sha):
+    from pipeline import completed_meta
+    meta = completed_meta(directory, vocab)
+    if (meta['seed'] != 42 or meta['eval_fraction'] != .01 or meta['eos_token_id'] != 0
+            or meta['data_files'] != [pool_info['output_path']]
+            or sum(meta[s]['documents'] for s in ('train', 'eval')) != pool_info['records']
+            or sum(meta[s]['bytes'] for s in ('train', 'eval')) != pool_info['text_bytes']
+            or sha256_file(directory / 'tokenizer.json') != tokenizer_sha):
+        raise ValueError('DCLM token stream corpus, split or tokenizer mismatch')
+    repack = read_json(directory / 'repack.json')
+    if repack['tokenizer_sha256'] != tokenizer_sha or repack['dtype'] != 'uint32':
+        raise ValueError('DCLM token stream repack identity mismatch')
+    for split in ('train', 'eval'):
+        if (any(repack[split][k] != meta[split][k] for k in ('documents', 'bytes', 'tokens'))
+                or sha256_file(directory / f'{split}.bin') != repack[split]['token_sha256']
+                or sha256_file(directory / f'{split}.documents.csv.gz') != repack[split]['sha256']):
+            raise ValueError(f'DCLM {split} token stream hash/count mismatch')
+    return meta, repack
+
+
+def tokenize_pool(root, pool, vocab):
+    """Encode every pool document once; atomically publish verified uint32 streams."""
+    raw = Path(root) / 'raw_text_dclm' / pool / f'dclm_{pool.lower()}.jsonl'
+    target = tokenized_path(root, pool, vocab)
+    tokenizer = tokenizer_path(root, pool, vocab)
+    with lock(root, f'dclm-tokens-{pool}-{vocab}'):
+        pool_info = read_json(raw.with_name('pool.json'))
+        bpe = read_json(tokenizer.with_name('pipeline.json'))
+        if bpe['recipe']['pool'] != pool_info or bpe['verified']['vocab_size'] != vocab:
+            raise ValueError('DCLM tokenizer/pool identity mismatch')
+        verify_output(raw, pool_info['output'])
+        verify_output(tokenizer, bpe['output'])
+        heldout = Path(pool_info['recipe']['heldout_file'])
+        if sha256_file(heldout) != pool_info['recipe']['heldout_sha256']:
+            raise ValueError('DCLM held-out exclusion changed')
+        recipe = {'pool': pool_info, 'tokenizer_sha256': bpe['output']['sha256'],
+                  'vocab_size': vocab, 'seed': 42, 'eval_fraction': .01,
+                  'eos_per_document': 1, 'dtype': 'uint32'}
+        marker = target / 'pipeline.json'
+        if marker.exists():
+            info = read_json(marker)
+            if info['recipe'] != recipe:
+                raise ValueError('Published DCLM tokenization recipe changed')
+            meta, repack = verify_token_stream(target, pool_info, vocab, recipe['tokenizer_sha256'])
+            if info['meta'] != meta or info['repack'] != repack:
+                raise ValueError('Published DCLM tokenization metadata changed')
+            return info
+        staging = target.with_name(target.name + '.staging')
+        archive_partial(target)
+        archive_partial(staging)
+        emit(stage='tokenization', pool=pool, vocab_size=vocab, state='started',
+             documents_total=pool_info['records'], text_bytes_total=pool_info['text_bytes'])
+        run([os.sys.executable, 'tokenize_data.py', '--data', raw, '--tokenizer', tokenizer,
+             '--output-dir', staging, '--seed', '42', '--eval-fraction', '0.01', '--progress-json'])
+        verify_output(raw, pool_info['output'])
+        verify_output(tokenizer, bpe['output'])
+        if read_json(raw.with_name('pool.json')) != pool_info or sha256_file(heldout) != recipe['pool']['recipe']['heldout_sha256']:
+            raise ValueError('DCLM pool/exclusion changed during tokenization')
+        meta, repack = verify_token_stream(staging, pool_info, vocab, recipe['tokenizer_sha256'])
+        info = {'recipe': recipe, 'meta': meta, 'repack': repack, 'output_path': str(target),
+                'total_tokens': sum(meta[s]['tokens'] for s in ('train', 'eval')),
+                'verified': {'full_pool': True, 'token_stream_hashes': True,
+                             'document_metadata_hashes': True, 'tokenizer_hash': True}}
+        write_json(staging / 'pipeline.json', info)
+        staging.replace(target)
+        emit(stage='tokenization_ready', pool=pool, vocab_size=vocab,
+             train_tokens=meta['train']['tokens'], eval_tokens=meta['eval']['tokens'], total_tokens=info['total_tokens'])
+        return info
+
+
 def run_stage(args):
     if args.stage == 'download-dclm':
         return download(args.root, args.workers)
@@ -441,6 +515,8 @@ def run_stage(args):
         return sample_pools(args.root)
     if args.stage == 'train-dclm-tokenizer':
         return train_bpe(args.root, args.data_size, args.vocab_size)
+    if args.stage == 'tokenize-dclm-data':
+        return tokenize_pool(args.root, args.data_size, args.vocab_size)
     raise ValueError('Only DCLM data and tokenizer preparation is authorized')
 
 
@@ -450,4 +526,7 @@ def summary(args):
         return {'data': read_json(folder / 'provenance.json')}
     if args.stage == 'sample-dclm':
         return {'pools': {p: read_json(folder / p / 'pool.json') for p in POOLS}}
+    if args.stage == 'tokenize-dclm-data':
+        info = read_json(tokenized_path(args.root, args.data_size, args.vocab_size) / 'pipeline.json')
+        return {'meta': info['meta'], 'tokenization': info}
     return {'tokenizer': read_json(tokenizer_path(args.root, args.data_size, args.vocab_size).with_name('pipeline.json'))}

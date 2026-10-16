@@ -126,3 +126,34 @@ def test_legacy_medium_large_results_are_excluded():
     data=report.build_report_data(state)
     assert not any(r['model']=='medium_large' for r in data['runs'])
     assert any(r['model']=='medium' for r in data['runs'])
+
+
+def test_dclm_counts_use_matching_full_pools_and_training_split_only():
+    import dclm_campaign
+    dclm = dclm_campaign.make_state()
+    dclm_campaign.enable_tokenization(dclm)
+    raw = {'records': 1010, 'text_bytes': 40_400_000}
+    dclm['nodes']['dclm-pools']['summary'] = {'pools': {'5GB': raw}}
+    for vocab, count in [(32000, 10_000_000), (64000, 9_000_000)]:
+        meta = metadata(count)
+        meta.update(vocab_size=vocab, eos_token_id=0)
+        info = {'meta': meta, 'recipe': {'pool': raw, 'tokenizer_sha256': str(vocab)},
+                'total_tokens': count+100_000,
+                'verified': dict.fromkeys(('full_pool', 'token_stream_hashes', 'document_metadata_hashes', 'tokenizer_hash'), True)}
+        dclm['nodes'][f'dclm-bpe-5gb-{vocab}']['summary'] = {'tokenizer': {'output': {'sha256': str(vocab)}}}
+        dclm['nodes'][f'dclm-tokens-5gb-{vocab}'].update(status='succeeded', summary={'meta': meta, 'tokenization': info})
+    model = state_fixture()
+    dolma_before = report.build_report_data(model)
+    result = report.build_report_data(model, dclm)
+    row = next(r for r in result['training_tokens'] if r['dataset'] == 'DCLM' and r['pool'] == '5GB')
+    assert row['tokens'] == {'32K': 10_000_000, '64K': 9_000_000, '128K': None}
+    assert row['change_vs_32k_pct']['64K'] == pytest.approx(-10)
+    assert row['all_tokens']['32K'] == 10_100_000
+    assert row['change_vs_32k_pct']['128K'] is None
+    assert result['runs'] == dolma_before['runs']
+    assert [r for r in result['training_tokens'] if r['dataset'] == 'Dolma'] == dolma_before['training_tokens']
+    changed = dclm['nodes']['dclm-tokens-5gb-64000']['summary']['meta']
+    changed['train']['documents'] -= 1
+    changed['eval']['documents'] += 1
+    with pytest.raises(ValueError, match='documents differ'):
+        report.build_report_data(model, dclm)

@@ -23,6 +23,7 @@ RESOURCES = {
     'download-dclm': (16, '64 GiB'),
     'sample-dclm': (4, '32 GiB'),
     'train-dclm-tokenizer': (64, '128 GiB'),
+    'tokenize-dclm-data': (16, '64 GiB'),
     'download-data': (4, '32 GiB'),
     'prepare-validation': (16, '64 GiB'),
     'validate-model': (8, '64 GiB'),

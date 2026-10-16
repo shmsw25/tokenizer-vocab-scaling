@@ -195,3 +195,78 @@ def test_real_bpe_training_reuses_verified_pool_and_preserves_dolma_paths(tmp_pa
     assert not (tmp_path/'tokenizers').exists()
     assert not (tmp_path/'raw_text').exists()
     assert not (tmp_path/'models').exists()
+
+
+def test_tokenization_extension_preserves_receipts_and_has_only_nine_cpu_streams():
+    state = controller.make_state()
+    for k,n in state['nodes'].items():
+        n.update(status='succeeded', receipt={'workload_id': k}, summary={'preserve': True})
+    before = copy.deepcopy(state['nodes'])
+    assert controller.enable_tokenization(state)
+    assert not controller.enable_tokenization(state)
+    controller.validate_scope(state)
+    assert len(state['nodes']) == 20
+    assert all(state['nodes'][k] == n for k,n in before.items())
+    ready = ready_nodes(state)
+    assert len(ready) == 9
+    for key in ready:
+        n = state['nodes'][key]
+        assert n['stage'] == 'tokenize-dclm-data'
+        args = submit.parser().parse_args(n['arguments'] + placement_arguments(n))
+        pipeline.validate_args(args)
+        task = submit.make_spec(args)['tasks'][0]
+        assert task['resources']['gpuCount'] == 0
+        assert task['constraints']['cluster'] == ['ai2/saturn', 'ai2/neptune']
+        assert {'name': 'CUDA_VISIBLE_DEVICES', 'value': ''} in task['envVars']
+        assert task['context']['minRuntime'] == ('1h' if n['data_size'] == '5GB' else '3h')
+    state['nodes'][ready[0]]['arguments'][0] = 'train-model'
+    with pytest.raises(ValueError, match='Unauthorized'):
+        controller.validate_scope(state)
+
+
+def test_real_tokenization_all_documents_reuse_corruption_and_partial_history(tmp_path):
+    from tokenizers import Tokenizer
+    from tokenize_data import tokenized_documents
+    sampled_fixture(tmp_path)
+    pools = d.sample_pools(tmp_path, {'5GB': 20000}, heldout_count=10)
+    d.train_bpe(tmp_path, '5GB', 300)
+    target = d.tokenized_path(tmp_path, '5GB', 300)
+    staging = target.with_name(target.name + '.staging')
+    staging.mkdir(parents=True)
+    (staging / 'partial-evidence').write_text('preserve')
+    info = d.tokenize_pool(tmp_path, '5GB', 300)
+    assert list((target.parent / 'partial_history').glob('*/partial-evidence'))
+    assert d.tokenize_pool(tmp_path, '5GB', 300) == info
+    tokenizer = Tokenizer.from_file(str(d.tokenizer_path(tmp_path, '5GB', 300)))
+    expected = {'train': [], 'eval': []}
+    for split, _, ids in tokenized_documents([Path(pools['5GB']['output_path'])], tokenizer, 0, .01, 42):
+        expected[split].extend(ids)
+    for split in expected:
+        assert np.fromfile(target / f'{split}.bin', dtype=np.uint32).tolist() == expected[split]
+    assert sum(info['meta'][s]['documents'] for s in expected) == pools['5GB']['records']
+    assert info['total_tokens'] == sum(len(x) for x in expected.values())
+    assert not (tmp_path / 'tokenized_data').exists()
+    with (target / 'train.bin').open('r+b') as out:
+        out.write(b'\xff\xff\xff\xff')
+    with pytest.raises(ValueError, match='hash/count'):
+        d.tokenize_pool(tmp_path, '5GB', 300)
+
+
+def test_tokenization_progress_eta_excludes_restart_and_queue(tmp_path):
+    state = controller.make_state()
+    controller.enable_tokenization(state)
+    key = 'dclm-tokens-5gb-32000'
+    node = state['nodes'][key]
+    node['status'] = 'running'
+    state['nodes']['dclm-pools']['summary'] = {'pools': {'5GB': {'text_bytes': 1000, 'records': 100}}}
+    folder = tmp_path / 'logs'
+    folder.mkdir()
+    points = [{'time': 100, 'documents': 90, 'text_bytes': 900},
+              {'time': 200, 'documents': 10, 'text_bytes': 100},
+              {'time': 300, 'documents': 20, 'text_bytes': 200}]
+    d.write_json(folder / f'{key}.json', [{'message': 'TOKENIZATION_PROGRESS '+json.dumps(p)} for p in points])
+    controller.collect_progress(state, tmp_path)
+    assert node['tokenization_eta_seconds'] == 800
+    node['status'] = 'queued'
+    controller.collect_progress(state, tmp_path)
+    assert 'tokenization_eta_seconds' not in node

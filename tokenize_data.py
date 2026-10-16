@@ -20,6 +20,7 @@ import hashlib
 import json
 import random
 import shutil
+import time
 from itertools import islice
 from pathlib import Path
 
@@ -48,6 +49,7 @@ def main():
     parser.add_argument('--eval-fraction', type=float, default=0.01)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--batch-size', type=int, default=256, help='Documents tokenized per batch')
+    parser.add_argument('--progress-json', action='store_true', help='Publish measured tokenization progress')
     args = parser.parse_args()
 
     if not 0 < args.eval_fraction < 1:
@@ -64,6 +66,7 @@ def main():
     stats = {'train': {'documents': 0, 'bytes': 0, 'tokens': 0},
              'eval': {'documents': 0, 'bytes': 0, 'tokens': 0}}
     hashes = {split: hashlib.sha256() for split in stats}
+    started = last_notice = time.monotonic()
     with (args.output_dir / 'train.bin').open('wb') as train, \
             (args.output_dir / 'eval.bin').open('wb') as evaluation, \
             gzip.open(args.output_dir / 'train.documents.csv.gz.part', 'wt') as train_docs, \
@@ -83,6 +86,12 @@ def main():
             done = stats['train']['documents'] + stats['eval']['documents']
             if done % (args.batch_size * 1000) == 0:
                 print(f'{done:,} documents', flush=True)
+            if args.progress_json and done % args.batch_size == 0 and time.monotonic() - last_notice >= 30:
+                last_notice = time.monotonic()
+                print('TOKENIZATION_PROGRESS ' + json.dumps({
+                    'time': time.time(), 'elapsed_seconds': last_notice - started,
+                    'documents': done, 'text_bytes': sum(s['bytes'] for s in stats.values()),
+                    'tokens': sum(s['tokens'] for s in stats.values())}), flush=True)
 
     total_bytes = stats['train']['bytes'] + stats['eval']['bytes']
     total_tokens = stats['train']['tokens'] + stats['eval']['tokens']
