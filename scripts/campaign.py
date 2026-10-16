@@ -351,7 +351,8 @@ def record_native_loss_failure(node, lines):
 
 JOB_OBSERVATIONS = ('reported_metrics', 'wandb_observation', 'wandb_final_checked',
                     'progress', 'runtime_batch', 'runtime_batch_verified', 'resume_verified',
-                    'loss_curve_review', 'gradient_curve_review', 'chain_snapshot')
+                    'loss_curve_review', 'gradient_curve_review', 'chain_snapshot',
+                    'repetition_filter_verified')
 
 
 def record_training_job_change(node, job_id, previous_job):
@@ -464,6 +465,7 @@ def refresh(state, folder):
                                                   ('HEALTH_STOP ', 'health_stop'),
                                                   ('RUNTIME_BATCH_PLAN ', 'runtime_batch'),
                                                   ('RUNTIME_BATCH_VERIFIED ', 'runtime_batch_verified'),
+                                                  ('REPETITION_FILTER_VERIFIED ', 'repetition_filter_verified'),
                                                   ('RESUME_VERIFIED ', 'resume_verified')]:
                                 if fragment.startswith(prefix):
                                     node[field] = json.loads(fragment[len(prefix):])

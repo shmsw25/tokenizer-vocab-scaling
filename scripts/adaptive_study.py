@@ -591,7 +591,8 @@ def monitor_wandb(state):
                     node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
                         'metrics': {k: v for k, v in metrics.items() if k in
                             ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/total grad norm',
-                             'optim/step skipped', 'train/Z loss', '_step')
+                             'optim/step skipped', 'train/Z loss', 'train/masked instances (%)',
+                             'train/masked labels (%)', '_step')
                             and isinstance(v, (int, float)) and math.isfinite(v)}}
                 review_node(node, api, cache_dir, now(), current_run=run)
                 try:

@@ -144,6 +144,8 @@ def stage_arguments(args):
             result.append('--resume-latest')
         if args.decay_horizons:
             result += ['--decay-horizons', *map(str, args.decay_horizons)]
+        if args.repetition_filter != 'none':
+            result += ['--repetition-filter', args.repetition_filter]
     if args.stage == 'validate-model':
         result += ['--model-directory', str(args.model_directory)]
     if args.stage == 'evaluate-model':

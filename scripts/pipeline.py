@@ -14,8 +14,10 @@ import time
 from decimal import Decimal
 if __package__:
     from .training_recipe import EMO_RECIPE, RECIPES, configure_recipe
+    from .repetition_filter import FILTER_CHOICES, configure_repetition_filter
 else:
     from training_recipe import EMO_RECIPE, RECIPES, configure_recipe
+    from repetition_filter import FILTER_CHOICES, configure_repetition_filter
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
@@ -77,6 +79,8 @@ def add_stage_arguments(parser, stage):
     if stage in MODEL_STAGES:
         parser.add_argument('--training-recipe', choices=RECIPES, default=EMO_RECIPE,
                             help='Versioned optimization recipe; legacy-adamw-v1 preserves old runs')
+        parser.add_argument('--repetition-filter', choices=FILTER_CHOICES, default='none',
+                            help='Opt-in EMO training sequence masking; keep identical across model stages')
         parser.add_argument('--validation-id', choices=['dolma100m-v1', 'legacy'],
                             default='dolma100m-v1',
                             help='Shared validation by default; legacy only preserves existing run fingerprints')
@@ -382,6 +386,7 @@ def training_plan(args):
                                          dataset=getattr(args, 'dataset', 'dolma'))
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
     configure_recipe(cfg, args.training_recipe)
+    configure_repetition_filter(cfg, args.repetition_filter)
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
     # The explicit embedding override participates in the scientific fingerprint.
     tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
@@ -389,6 +394,8 @@ def training_plan(args):
         tags += f'_EmbedWD{t["embedding_weight_decay"]:g}'
     elif t['weight_decay'] > 0:
         tags += '_EmbedWD'
+    if t.get('repetition_filter'):
+        tags += '_RepFilter'
     run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
                 f'seq{seq}_seed{args.seed}{tags}_{fingerprint}')
     models = 'models_dclm' if getattr(args, 'dataset', 'dolma') == 'dclm' else 'models'

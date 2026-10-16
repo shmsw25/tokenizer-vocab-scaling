@@ -356,6 +356,22 @@ reshuffled using the upstream seed domain, then concatenated into new fixed-leng
 sequences. Source token files are never rewritten. Later-epoch resumes verify the
 repack version and boundary checksum; old FSL epoch-1 checkpoints remain compatible.
 
+For a fresh filtered run, pass `--repetition-filter emo-v1` to the model command
+(and identically to conversion/evaluation, or use the same-shell chain).
+The default `none` leaves existing fingerprints unchanged. This uses EMO's native
+instance mask: any token pattern of period 1–13 repeated >=32 times masks the
+entire training sequence after packing. It neither removes batch slots nor
+rewrites token streams; validation stays unfiltered. The setting is hashed into
+the output path and checked on checkpoint restoration, so it cannot be added to
+an existing run. See the main README for masking metrics and loss normalization.
+
+The explicitly authorized three-run DCLM 10GB small-model comparison is recorded
+by `scripts/repetition_trials.py` under `study.dclm_repetition_filter_10gb`.
+Its one-time authorization preserves every older node/hold and grants admission
+only to the exact three argument hashes. Never rerun the authorization command
+after the audit backup exists. The controller monitors both masked-sequence and
+masked-label fractions, and the DCLM table labels these variants `EMO · RepFilter`.
+
 New tokenization records exact spans in `train.documents.csv.gz` and
 `eval.documents.csv.gz`, with checksums/counts in `repack.json`. Existing single-epoch
 runs need no sidecars. Before using an existing token stream for **multi-epoch**

@@ -102,6 +102,25 @@ and training schedule continue, just as in EMO. The study's additional CE/gradie
 stop rules do not apply to this recipe. Native EMO errors and explicit human
 health decisions still apply. W&B records `optim/step skipped` and `train/Z loss`.
 
+Repetitive training sequences can be masked with `--repetition-filter emo-v1`
+in `train.py` or the pipeline/submit model commands. This calls EMO's existing
+`InstanceFilterConfig`: a token pattern with period 1–13 repeated at least 32
+times masks **the entire packed sequence** from CE and z-loss. The sequence still
+occupies its batch slot; tokens, order, batch size, epoch length and schedule are
+unchanged. Filtering is applied after packing, including later repacked epochs.
+Validation and benchmark inputs are never filtered.
+
+The default is `none`, preserving every existing run. Enabled settings participate
+in the run fingerprint (`_RepFilter` paths) and must match across training,
+conversion and evaluation; a checkpoint cannot resume with filtering changed.
+`REPETITION_FILTER_VERIFIED` and `resolved_training_config.json` record the actual
+dataset filter. W&B and `REPORT_METRICS` expose `train/masked instances (%)` and
+`train/masked labels (%)`; despite the names these are fractions in [0, 1].
+As in EMO, masked instances count as zero-loss tokens in the training-loss
+denominator, so training CE is not a loss averaged only over retained tokens.
+Use unchanged validation scores for comparisons. Enabling the option requires
+a fresh experiment; implementing it does not launch or change campaign jobs.
+
 Tied weights receive EMO's final output-head initialization draw. This retains
 the same normal distribution and standard deviation, but changes the seeded
 draw/order. The shared embedding/output parameter stays in the root FSDP group.

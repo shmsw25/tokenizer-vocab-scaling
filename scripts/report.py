@@ -10,6 +10,7 @@ from pipeline import DEFAULT_BATCH_SIZE, EVALS, REPO
 from adaptive_study import excluded_run
 from loss_curve_health import invalid_result
 from training_recipe import configure_recipe, node_recipe
+from repetition_filter import configure_repetition_filter
 
 MODEL_ORDER = ['small', 'medium', 'medium_large']
 COLORS = {32000: '#2563eb', 64000: '#8b5cf6', 128000: '#dc681e'}
@@ -49,6 +50,7 @@ def run_config(node):
     cfg['training']['embedding_weight_decay'] = float(argument(node, '--embedding-weight-decay',
         cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay'])))
     configure_recipe(cfg, node_recipe(node))
+    configure_repetition_filter(cfg, argument(node, '--repetition-filter', 'none'))
     return cfg
 
 
@@ -189,6 +191,8 @@ def build_report_data(state, dclm_state=None):
         runs.append({'id': key, 'dataset': dataset, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
                      'model': model, 'training_status': training_status,
                      'training_recipe': node_recipe(node),
+                     'repetition_filter': cfg['training'].get('repetition_filter'),
+                     'repetition_filter_verified': node.get('repetition_filter_verified'),
                      'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
                      'result_valid': not invalid,
                      'loss_curve_review': node.get('loss_curve_review'),

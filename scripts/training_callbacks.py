@@ -56,7 +56,8 @@ class ReportMetricsCallback(Callback):
             return
         changed = False
         for name, value in metrics.items():
-            if name in ('optim/step skipped', 'train/Z loss') and math.isfinite(float(value)):
+            if name in ('optim/step skipped', 'train/Z loss', 'train/masked instances (%)',
+                        'train/masked labels (%)') and math.isfinite(float(value)):
                 if step >= self.latest.get('recipe_metrics_step', 0):
                     self.latest.update({name: float(value), 'recipe_metrics_step': step})
                     changed = True

@@ -41,6 +41,8 @@ from scripts.training_callbacks import (LossHealthCallback, ReportMetricsCallbac
                                         RuntimeBatchEvidenceCallback, WSDCheckpointerCallback)
 from scripts.training_recipe import (EMO_RECIPE, LEGACY_RECIPE, RECIPES, EMO_SETTINGS,
                                      configure_recipe, checkpoint_recipe_guard)
+from scripts.repetition_filter import (FILTER_CHOICES, build_instance_filter,
+                                       configure_repetition_filter, verify_instance_filter)
 
 
 def load_meta(data_dir):
@@ -140,13 +142,15 @@ def verify_live_recipe(module, config, *, recipe=EMO_RECIPE):
 
 
 class TrainingRecipeCallback(Callback):
-    def __init__(self, config, model_config, module_config, output_dir, recipe):
+    def __init__(self, config, model_config, module_config, output_dir, recipe, dataset=None):
         self.config, self.model_config, self.module_config = config, model_config, module_config
         self.output_dir, self.recipe = output_dir, recipe
+        self.dataset = dataset
 
     def pre_train(self):
         # Trainer.fit() may auto-restore: verify after that, before any updates.
         groups = verify_live_recipe(self.trainer.train_module, self.config, recipe=self.recipe)
+        filter_record = verify_instance_filter(self.dataset, self.config) if self.dataset is not None else None
         if get_rank() == 0:
             from scripts.pipeline import write_json
             module = self.trainer.train_module
@@ -161,6 +165,9 @@ class TrainingRecipeCallback(Callback):
                       'actual_autocast_precision': str(module.autocast_precision),
                       'actual_callbacks': sorted(self.trainer.callbacks),
                       'float32_matmul_precision': torch.get_float32_matmul_precision()}
+            if filter_record is not None:
+                record['repetition_filter'] = filter_record
+                print('REPETITION_FILTER_VERIFIED ' + json.dumps(filter_record), flush=True)
             write_json(self.output_dir / 'resolved_training_config.json', record)
             print('TRAINING_RECIPE_VERIFIED ' + json.dumps(record), flush=True)
 
@@ -189,7 +196,7 @@ def verify_optimizer_groups(model, optimizer, training):
     return evidence
 
 
-def training_dataset(data_dir, meta, *, data_loader='repack', **dataset_kwargs):
+def training_dataset(data_dir, meta, *, data_loader='repack', repetition_filter='none', **dataset_kwargs):
     """Default to repack without changing epoch 1 or existing output fingerprints."""
     if data_loader not in ('repack', 'fsl'):
         raise ValueError(f'Unknown data loader: {data_loader}')
@@ -203,7 +210,9 @@ def training_dataset(data_dir, meta, *, data_loader='repack', **dataset_kwargs):
             num_documents=meta['train']['documents'],
             document_metadata_digest=provenance.get('train', {}).get('sha256'))
     return NumpyFSLDatasetConfig(
-        paths=[str(Path(data_dir) / 'train.bin')], **dataset_kwargs, **repack_kwargs).build()
+        paths=[str(Path(data_dir) / 'train.bin')],
+        instance_filter_config=build_instance_filter(repetition_filter),
+        **dataset_kwargs, **repack_kwargs).build()
 
 
 def main():
@@ -211,6 +220,8 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--training-recipe', choices=RECIPES,
                         help='Fresh runs default to emo-dense-v1; legacy is explicit recovery only')
+    parser.add_argument('--repetition-filter', choices=FILTER_CHOICES,
+                        help='Default: saved config, otherwise none; emo-v1 masks repetitive training sequences')
     parser.add_argument('--data-dir', type=Path, required=True, help='Output directory of tokenize_data.py')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--seq-length', type=int)
@@ -230,6 +241,7 @@ def main():
     cfg = json.loads(cli.config.read_text())
     recipe = cli.training_recipe or cfg.get('training_recipe', {}).get('name', EMO_RECIPE)
     configure_recipe(cfg, recipe)
+    repetition_filter = configure_repetition_filter(cfg, cli.repetition_filter)
     if cli.runtime_batch_plan:
         from scripts.runtime_batch import apply_plan, cuda_device
         if cli.micro_batch_size is not None or cli.gradient_accumulation_steps is not None:
@@ -306,7 +318,8 @@ def main():
         module = module_cfg.build(model)
         dataset_kwargs = dict(sequence_length=seq_length, tokenizer=tokenizer,
                               work_dir=str(work_dir), dtype='uint32')
-        dataset = training_dataset(data_dir, meta, data_loader=t['data_loader'], **dataset_kwargs)
+        dataset = training_dataset(data_dir, meta, data_loader=t['data_loader'],
+                                   repetition_filter=repetition_filter, **dataset_kwargs)
         first_epoch_steps = len(dataset) // global_batch_size
         extends_epoch_one = (t['max_steps'] > first_epoch_steps if t.get('max_steps') is not None
                              else t.get('epochs', 1) > 1)
@@ -337,7 +350,7 @@ def main():
                     eval_interval=t.get('eval_steps', 10000), eval_on_finish=True),
             })
         trainer_cfg.callbacks['training_recipe'] = TrainingRecipeCallback(
-            cfg, model_cfg, module_cfg, output_dir, recipe)
+            cfg, model_cfg, module_cfg, output_dir, recipe, dataset=dataset)
         if t.get('health_check') and recipe == LEGACY_RECIPE:
             trainer_cfg.callbacks['loss_health'] = LossHealthCallback(str(output_dir), t['warmup_steps'])
         if cfg.get('runtime_batch'):

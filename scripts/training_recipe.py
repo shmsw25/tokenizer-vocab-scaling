@@ -64,6 +64,8 @@ def checkpoint_recipe_guard(checkpoint, config):
     saved = json.loads(path.read_text())
     if saved.get('training_recipe') != config.get('training_recipe'):
         raise ValueError('Checkpoint training recipe mismatch; start a fresh run')
+    if saved.get('training', {}).get('repetition_filter') != config.get('training', {}).get('repetition_filter'):
+        raise ValueError('Checkpoint repetition filter mismatch; start a fresh run')
 
 
 def node_recipe(node):
