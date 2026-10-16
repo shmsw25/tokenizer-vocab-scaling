@@ -73,6 +73,9 @@ def score_validation(args):
     from transformers import AutoModelForCausalLM
     directory = args.model_directory
     training = read_json(directory/'training_summary.json')
+    dataset = getattr(args, 'dataset', 'dolma')
+    if training['config'].get('pipeline', {}).get('dataset', 'dolma') != dataset:
+        raise ValueError('Validation dataset does not match the trained model')
     if training['model_size'] == 'medium_large' and (
             training['config']['model'].get('block_name') != 'default'
             or training['config']['model'].get('qk_norm')):
@@ -83,7 +86,7 @@ def score_validation(args):
     if converted['conversion']['source_checkpoint'] != training['checkpoint']:
         raise ValueError('Converted checkpoint differs from completed training')
     exported = Path(converted['exported'])
-    meta = validation_metadata(args.root, args.data_size, args.vocab_size)
+    meta = validation_metadata(args.root, args.data_size, args.vocab_size, dataset=dataset)
     if digest(directory/'tokenizer.json') != meta['recipe']['tokenizer_sha256']:
         raise ValueError('Model tokenizer differs from shared-validation tokenizer')
     output = directory/f'validation_{VERSION}.json'

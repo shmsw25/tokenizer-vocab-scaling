@@ -54,6 +54,9 @@ def data_size(value):
 
 def add_stage_arguments(parser, stage):
     parser.add_argument('--root', type=Path, default=Path(DEFAULT_ROOT))
+    if stage in (*MODEL_STAGES, 'tokenize-validation', 'validate-model'):
+        parser.add_argument('--dataset', choices=['dolma', 'dclm'], default='dolma',
+                            help='Training corpus and tokenizer namespace; validation remains dolma100m-v1')
     if stage in ('download-dclm', 'sample-dclm'):
         if stage == 'download-dclm':
             parser.add_argument('--workers', type=positive_int, default=8)
@@ -138,17 +141,21 @@ def dataset_name(args, vocab=None):
 
 
 def tokenized_dir(args, vocab=None):
-    return args.root / 'tokenized_data' / dataset_name(args, vocab)
+    folder = 'tokenized_data_dclm' if getattr(args, 'dataset', 'dolma') == 'dclm' else 'tokenized_data'
+    return args.root / folder / dataset_name(args, vocab)
 
 
 def raw_file(args):
+    if getattr(args, 'dataset', 'dolma') == 'dclm':
+        return args.root / 'raw_text_dclm' / args.data_size / f'dclm_{args.data_size.lower()}.jsonl'
     if args.data_size == '100GB':
         return args.root / 'raw_text/100GB/training/dolma3_100gb.jsonl'
     return args.root / 'raw_text' / args.data_size / f'dolma3_{args.data_size.lower()}.jsonl'
 
 
 def tokenizer_file(args):
-    return args.root / 'tokenizers' / dataset_name(args) / 'tokenizer.json'
+    folder = 'tokenizers_dclm' if getattr(args, 'dataset', 'dolma') == 'dclm' else 'tokenizers'
+    return args.root / folder / dataset_name(args) / 'tokenizer.json'
 
 
 def read_json(path):
@@ -289,8 +296,17 @@ def training_plan(args):
         for key in ('documents', 'bytes'):
             if meta[split][key] != baseline[split][key]:
                 raise ValueError(f'Target and 32k reference differ in {split}.{key}')
-    for directory in (data, reference):
+    for directory in dict.fromkeys((data, reference)):
         provenance = read_json(directory / 'pipeline.json')
+        if getattr(args, 'dataset', 'dolma') == 'dclm':
+            from dclm_data import verify_token_stream
+            vocab = args.vocab_size if directory == data else REFERENCE_VOCAB
+            pool = read_json(raw_file(args).with_name('pool.json'))
+            tokenizer = args.root / 'tokenizers_dclm' / dataset_name(args, vocab) / 'tokenizer.json'
+            if provenance['recipe']['pool'] != pool or provenance['recipe']['tokenizer_sha256'] != digest(tokenizer):
+                raise ValueError('DCLM training stream recipe mismatch')
+            verify_token_stream(directory, pool, vocab, digest(tokenizer))
+            continue
         if provenance['raw'] != raw_signature(raw_file(args)):
             raise ValueError(f'Raw text no longer matches {directory}')
         if provenance['tokenizer_sha256'] != digest(directory / 'tokenizer.json'):
@@ -351,9 +367,12 @@ def training_plan(args):
     }
     if pool := pool_provenance(args):
         cfg['pipeline']['pool'] = pool
+    if getattr(args, 'dataset', 'dolma') == 'dclm':
+        cfg['pipeline']['dataset'] = 'dclm'
     if getattr(args, 'validation_id', None) not in (None, 'legacy'):
         from validation_data import validation_metadata
-        validation = validation_metadata(args.root, args.data_size, args.vocab_size)
+        validation = validation_metadata(args.root, args.data_size, args.vocab_size,
+                                         dataset=getattr(args, 'dataset', 'dolma'))
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
     # The explicit embedding override participates in the scientific fingerprint.
@@ -364,7 +383,8 @@ def training_plan(args):
         tags += '_EmbedWD'
     run_name = (f'wsd_lr{t["learning_rate"]:g}_wd{t["weight_decay"]:g}_bs{args.batch_size}_'
                 f'seq{seq}_seed{args.seed}{tags}_{fingerprint}')
-    output = args.root / 'models' / args.model_size / dataset_name(args) / run_name
+    models = 'models_dclm' if getattr(args, 'dataset', 'dolma') == 'dclm' else 'models'
+    output = args.root / models / args.model_size / dataset_name(args) / run_name
     return cfg, output
 
 
@@ -425,12 +445,13 @@ def train_model(args):
             resume_args = ['--resume-from', str(checkpoint)]
         started = time.monotonic()
         runtime_plan = output / 'runtime_batch_plan.json'
+        run_prefix = 'dclm_' if getattr(args, 'dataset', 'dolma') == 'dclm' else ''
         run([sys.executable, REPO / 'scripts/runtime_batch.py', '--config', config_path,
              '--model-size', args.model_size, '--vocab-size', args.vocab_size, '--output', runtime_plan])
         run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
              f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
              '--data-dir', tokenized_dir(args), '--output-dir', output,
-             '--run-name', f'{args.model_size}_{dataset_name(args)}_{output.name}',
+             '--run-name', f'{run_prefix}{args.model_size}_{dataset_name(args)}_{output.name}',
              '--runtime-batch-plan', runtime_plan, *resume_args])
         checkpoint = latest_checkpoint(output)
         write_json(output / 'training_summary.json', {
@@ -473,6 +494,12 @@ def convert_model(args):
         conversion = read_json(exported / 'conversion.json')
         if conversion['source_checkpoint'] != str(checkpoint):
             raise ValueError('Export came from a different checkpoint')
+        # DCLM uses the common Dolma validation stream; no legacy sample is needed.
+        if getattr(args, 'dataset', 'dolma') == 'dclm':
+            write_json(output / 'conversion_summary.json', {
+                'exported': str(exported), 'conversion': conversion, 'dataset': 'dclm',
+                'validation_id': 'dolma100m-v1'})
+            return
         # Scan the raw corpus once on CPUs; every evaluation reuses this sample.
         sys.path.insert(0, str(REPO / 'eval'))
         import eval_suite
@@ -502,7 +529,8 @@ def evaluate_model(args):
                 from types import SimpleNamespace
                 from score_validation import score_validation, replace_dolma_result
                 shared = score_validation(SimpleNamespace(root=args.root, data_size=args.data_size,
-                    vocab_size=args.vocab_size, model_directory=output))
+                    vocab_size=args.vocab_size, model_directory=output,
+                    dataset=getattr(args, 'dataset', 'dolma')))
                 metrics[name] = replace_dolma_result(output, shared)
                 continue
             result = directory / f'{name}.json'
@@ -545,7 +573,8 @@ def publish_summary(args):
         summary['tokenizer'] = read_json(tokenizer_file(args).with_name('pipeline.json'))
     elif args.stage == 'tokenize-validation':
         from validation_data import validation_metadata
-        summary['validation'] = validation_metadata(args.root, args.data_size, args.vocab_size)
+        summary['validation'] = validation_metadata(args.root, args.data_size, args.vocab_size,
+                                                     dataset=getattr(args, 'dataset', 'dolma'))
     elif args.stage == 'tokenize-data':
         summary['meta'] = completed_meta(tokenized_dir(args), args.vocab_size)
     else:
@@ -561,6 +590,14 @@ def publish_summary(args):
 
 def pool_provenance(args):
     """Require a completed, immutable sample manifest for the new smaller pools."""
+    if getattr(args, 'dataset', 'dolma') == 'dclm':
+        from dclm_data import verify_output
+        info = read_json(raw_file(args).with_name('pool.json'))
+        verify_output(raw_file(args), info['output'])
+        heldout = Path(info['recipe']['heldout_file'])
+        if digest(heldout) != info['recipe']['heldout_sha256']:
+            raise ValueError('DCLM shared held-out documents changed')
+        return {**info, 'heldout_file': str(heldout), 'heldout_sha256': info['recipe']['heldout_sha256']}
     if Decimal(args.data_size[:-2]) > 100:
         return None
     info = read_json(raw_file(args).with_name('pool.json'))
@@ -591,7 +628,7 @@ def main():
         return
     from validation_data import prepare_validation, tokenize_validation
     from score_validation import score_validation
-    {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
+    {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size, dataset=a.dataset), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
      'tokenize-data': tokenize_data, 'train-model': train_model,
      'convert-model': convert_model, 'evaluate-model': evaluate_model}[args.stage](args)
     publish_summary(args)

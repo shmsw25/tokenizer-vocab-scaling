@@ -127,6 +127,8 @@ def stage_arguments(args):
         result += ['--data-size', args.data_size, '--sampling-seed', str(args.sampling_seed)]
     elif args.stage not in ('download-data', 'prepare-validation'):
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
+    if getattr(args, 'dataset', 'dolma') != 'dolma':
+        result += ['--dataset', args.dataset]
     if args.stage in MODEL_STAGES:
         for name in ('validation_id', 'model_size', 'gpus', 'micro_batch_size', 'batch_size',
                      'learning_rate', 'weight_decay', 'embedding_weight_decay', 'epochs', 'seed', 'max_steps',

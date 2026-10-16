@@ -142,11 +142,22 @@ def ready_nodes(state):
         return []
     ready = [key for key, node in state['nodes'].items()
             if node['status'] == 'pending' and not node.get('submission_error') and not node.get('chain_parent')
-            and not (node['stage'] == 'train-model' and state.get('study', {}).get('training_submission_hold'))
+            and training_submission_allowed(state, key)
             and not node.get('hold_reason') and not excluded_run(state, node) and not invalid_result(node)
             and training_gate_ready(state, node)
             and all(dependency_ready(state, node, dep) for dep in node['dependencies'])]
     return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
+
+
+def training_submission_allowed(state, key):
+    """An explicit, exact-recipe exception never releases the general training hold."""
+    import hashlib
+    node = state['nodes'][key]
+    if node['stage'] != 'train-model' or not state.get('study', {}).get('training_submission_hold'):
+        return True
+    allowed = state['study'].get('training_submission_exceptions', {}).get(key, {})
+    actual = hashlib.sha256(json.dumps(node['arguments'], separators=(',', ':')).encode()).hexdigest()
+    return allowed.get('source') == 'explicit_user_request' and allowed.get('arguments_sha256') == actual
 
 
 def prepare_chains(state):
@@ -463,7 +474,7 @@ def submit_ready(state, path, max_submissions=None):
         if max_submissions is not None and submitted >= max_submissions:
             break
         node = state['nodes'][key]
-        if node['stage'] == 'train-model' and state.get('study', {}).get('training_submission_hold'):
+        if not training_submission_allowed(state, key):
             continue
         if any(state['nodes'][dep].get('monitor_error') for dep in node['dependencies']):
             continue

@@ -134,8 +134,9 @@ def dclm_training_tokens(state):
 
 def build_report_data(state, dclm_state=None):
     nodes = state['nodes']
-    streams = {(n.get('data_size'), n['vocab_size']): n.get('summary', {}).get('meta', {})
-               for n in nodes.values() if n['stage'] == 'tokenize-data' and n['status'] == 'succeeded'}
+    streams = {(n.get('dataset', 'dclm' if n['stage'] == 'tokenize-dclm-data' else 'dolma'),
+                n.get('data_size'), n['vocab_size']): n.get('summary', {}).get('meta', {})
+               for n in nodes.values() if n['stage'] in ('tokenize-data', 'tokenize-dclm-data') and n['status'] == 'succeeded'}
     counts = []
     for pool in state.get('pool_sizes', ['100GB']):
         ns = [n for n in nodes.values() if n['stage'] == 'train-tokenizer' and n.get('data_size', '100GB') == pool]
@@ -150,6 +151,7 @@ def build_report_data(state, dclm_state=None):
         if excluded_run(state, node) or node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
         pool, vocab, model = node.get('data_size', '100GB'), node['vocab_size'], node['model_size']
+        dataset = node.get('dataset', 'dolma')
         conversion = next((n for n in nodes.values() if n['stage'] == 'convert-model' and key in n['dependencies']), {})
         conversion_key = next((k for k, n in nodes.items() if n is conversion), None)
         evaluation = next((n for n in nodes.values() if n['stage'] == 'evaluate-model' and conversion_key in n['dependencies']), {})
@@ -166,7 +168,7 @@ def build_report_data(state, dclm_state=None):
             # Do not display the old 1000-document score while backfill is pending.
             shared = node.get('shared_validation') or evaluation.get('summary', {}).get('shared_validation', {})
             metrics['dolma_bpb'] = shared.get('metrics', {}).get('validation_bpb')
-        budget = compute_budget(node, cfg, streams.get((pool, vocab), {}), streams.get((pool, 32000), {}))
+        budget = compute_budget(node, cfg, streams.get((dataset, pool, vocab), {}), streams.get((dataset, pool, 32000), {}))
         parameters = budget.get('parameters')
         if parameters is None:
             parameters = model_compute(json.dumps(cfg['model'], sort_keys=True), vocab,
@@ -182,7 +184,7 @@ def build_report_data(state, dclm_state=None):
         if invalid:
             metrics = {name: None for name in metrics}
         runtime_batch = node.get('runtime_batch') or node.get('summary', {}).get('training', {}).get('runtime_batch') or {}
-        runs.append({'id': key, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
+        runs.append({'id': key, 'dataset': dataset, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
                      'model': model, 'training_status': training_status,
                      'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
                      'result_valid': not invalid,
@@ -214,14 +216,16 @@ def build_report_data(state, dclm_state=None):
                      'eval_url': evaluation.get('receipt', {}).get('url')})
     groups = defaultdict(list)
     for run in runs:
-        groups[(run['pool'], run['vocab'], run['model'], run['epoch_fraction'])].append(run)
+        groups[(run['dataset'], run['pool'], run['vocab'], run['model'], run['epoch_fraction'])].append(run)
     selected = []
     for group in groups.values():
         eligible = [r for r in group if r['training_status'] == 'completed' and r['result_valid']
                     and r['metrics']['validation_bpb'] is not None]
         pool_search = state.get('study', {}).get('pool_lr_search', {})
         fixed_lr = state.get('study', {}).get('fixed_learning_rates', {}).get(group[0]['model'])
-        if fixed_lr is not None:
+        if group[0]['dataset'] == 'dclm':
+            chosen_lr = None  # Explicit DCLM trials never enter the Dolma LR search.
+        elif fixed_lr is not None:
             chosen_lr = fixed_lr
         elif group[0]['pool'] in pool_search.get('pools', []):
             # Compare the authorized rates on this pool's validation split only.
@@ -240,7 +244,7 @@ def build_report_data(state, dclm_state=None):
     runs.sort(key=lambda r: (pools.index(r['pool']), MODEL_ORDER.index(r['model']), r['vocab'], r['lr'], r['wd'], r['batch_size'], r['embedding_wd'], r['id']))
     vocabs = sorted({n['vocab_size'] for n in nodes.values() if n['stage'] == 'tokenize-data'})
     training_tokens = [{'dataset': 'Dolma', 'pool': pool, 'tokens': {
-        vocab_label(vocab): streams.get((pool, vocab), {}).get('train', {}).get('tokens')
+        vocab_label(vocab): streams.get(('dolma', pool, vocab), {}).get('train', {}).get('tokens')
         for vocab in vocabs}} for pool in pools]
     if dclm_state and dclm_state.get('study', {}).get('tokenization', {}).get('enabled'):
         training_tokens.extend(dclm_training_tokens(dclm_state))
@@ -272,7 +276,7 @@ def build_figures(data, horizon=1.):
         figures[metric] = []
         for pool in data['pools']:
             fig = go.Figure()
-            pool_runs = [r for r in data['runs'] if r['pool'] == pool and r['id'] in data['selected']
+            pool_runs = [r for r in data['runs'] if r.get('dataset', 'dolma') == 'dolma' and r['pool'] == pool and r['id'] in data['selected']
                          and r['epoch_fraction'] == (horizon if pool == '100GB' else 1.)]
             plotted = 0
             for vocab in sorted({r['vocab'] for r in pool_runs}):

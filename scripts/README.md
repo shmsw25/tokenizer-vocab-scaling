@@ -620,3 +620,20 @@ windows and applies the repository's token-CE-to-byte normalization. The report
 replaces the old 1000-document Dolma score with this shared validation BPB and
 shows blanks until each replacement is ready. This corpus now supplies both
 the reported Dolma metric and LR selection; it is not an independent test set.
+
+### Explicit DCLM 10GB model trials
+
+The three authorized small-model trials use `--dataset dclm` on training,
+conversion, and evaluation, with LR `5e-4`, WD/EmbedWD `0.1`, and global batch
+128. They read the existing DCLM token streams and write under `models_dclm`.
+Their context lengths use the same-pool DCLM 32K reference. Three CPU
+`tokenize-validation --dataset dclm` prerequisites encode the unchanged
+`dolma100m-v1` documents into a separate `tokenized_dclm` validation namespace.
+The DCLM results table precedes the Dolma 3 table; DCLM runs never participate
+in the Dolma adaptive LR search or its plots.
+
+`dclm_training.py --authorize-small-10gb` is a one-time explicit authorization
+extension, not a recurring command. It preserves the global training hold and
+creates exact-argument exceptions for these three roots only. Routine monitoring
+continues through `campaign.py --advance`; chains share the training allocation,
+and no DCLM LR fallback or additional model experiment is authorized.
