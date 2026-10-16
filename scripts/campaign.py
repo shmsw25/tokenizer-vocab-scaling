@@ -5,6 +5,7 @@ before submission, so a lost response can be recovered without duplicate jobs.
 Failed jobs require explicit --retry-node after their failure is understood.
 """
 import argparse
+import copy
 from training_recipe import campaign_arguments
 from collections import Counter
 from datetime import datetime, timezone
@@ -348,6 +349,37 @@ def record_native_loss_failure(node, lines):
                 return
 
 
+JOB_OBSERVATIONS = ('reported_metrics', 'wandb_observation', 'wandb_final_checked',
+                    'progress', 'runtime_batch', 'runtime_batch_verified', 'resume_verified',
+                    'loss_curve_review', 'gradient_curve_review', 'chain_snapshot')
+
+
+def record_training_job_change(node, job_id, previous_job):
+    """Keep scheduler attempts distinct even when their workload receipt is unchanged."""
+    old_id = node.get('job_id')
+    if node['stage'] != 'train-model' or not old_id or old_id == job_id:
+        return
+    if (previous_job.get('id') != old_id or previous_job.get('workloadId') !=
+            node.get('receipt', {}).get('workload_id')):
+        raise ValueError('Previous job does not match the recorded training receipt')
+    if previous_job.get('status', {}).get('status') not in (
+            'STATUS_SUCCEEDED', 'STATUS_FAILED', 'STATUS_CANCELED'):
+        raise ValueError('Previous training job is not confirmed terminal')
+    history = node.setdefault('previous_attempts', [])
+    if not any(attempt.get('job_id') == old_id for attempt in history):
+        fields = (*JOB_OBSERVATIONS, 'receipt', 'arguments', 'job_id', 'hostname',
+                  'assignment', 'assigned_gpus', 'health_stop')
+        attempt = {field: copy.deepcopy(node[field]) for field in fields if field in node}
+        attempt.update(kind='scheduler_restart', recorded_at=now(),
+                       job_status=copy.deepcopy(previous_job['status']), next_job_id=job_id)
+        history.append(attempt)
+    # A restarted job can restore an earlier checkpoint and create a new W&B run.
+    # Do not report its predecessor's steps, hardware verification, or summary as current.
+    for field in JOB_OBSERVATIONS:
+        node.pop(field, None)
+    node['job_id'] = job_id
+
+
 def refresh(state, folder):
     from beaker import Beaker, BeakerWorkloadStatus
     from beaker.exceptions import BeakerWorkloadNotFound
@@ -392,6 +424,10 @@ def refresh(state, folder):
                 node['checked_at'] = now()
                 job = b.workload.get_latest_job(workload)
                 detail = MessageToDict(job)
+                if (node['stage'] == 'train-model' and node.get('job_id')
+                        and node['job_id'] != job.id):
+                    previous_job = MessageToDict(b.job.get(node['job_id']))
+                    record_training_job_change(node, job.id, previous_job)
                 node['job_id'] = job.id
                 node['job_status'] = detail.get('status', {})
                 assigned_details = detail.get('assignmentDetails', {})
