@@ -78,9 +78,10 @@ torchrun --standalone --nproc_per_node=8 train.py \
     --config configs/small.json --data-dir tokenized/32000 --output-dir runs/small_32k
 ```
 
-The config holds the model and optimizer settings. Vocabulary size and tokenizer
-come from `--data-dir`, so one config serves every vocabulary size. Rerunning the
-same command resumes from the last checkpoint in `--output-dir`.
+The config holds model dimensions and experiment LR/WD/batch/schedule settings.
+Fresh commands default to `--training-recipe emo-dense-v1`, matching the dense
+recipe in EMO `sewonm/icsl` at `6ef92fc3a45896a8d734ea4f852a3d35950e4abb`.
+Vocabulary size and tokenizer come from `--data-dir`.
 
 | Config | Layers | Width | Parameters with 32k / 64k / 128k | Learning rate |
 |---|---:|---:|---|---:|
@@ -92,15 +93,40 @@ The fixed warmup matches the infinite-compute project: 24,576 sequences, or
 192 steps at global batch 128. Warmup, decay, and epoch/step budget are recorded
 in the config and omitted from the readable output directory name.
 
-All configs use tied embeddings, sequence length 4096, AdamW with weight decay
-0.1, 192-step linear warm-up, constant learning rate, linear decay to zero over the
-last 10% of steps, BF16 autocast, and one epoch.
+The new recipe uses SkipStepAdamW (betas 0.9/0.95, epsilon 1e-8, foreach updates),
+EMO's 128-observation/6-sigma outlier handling, z-loss multiplier 1e-5, FSDP full
+wrapping with BF16 parameter materialization and FP32 gradient reduction, no
+autocast, and `highest` FP32 matmul precision. An anomalous finite update skips
+parameter changes, weight decay, moments, and the Adam step increment; the data
+and training schedule continue, just as in EMO. The study's additional CE/gradient
+stop rules do not apply to this recipe. Native EMO errors and explicit human
+health decisions still apply. W&B records `optim/step skipped` and `train/Z loss`.
+
+Tied weights receive EMO's final output-head initialization draw. This retains
+the same normal distribution and standard deviation, but changes the seeded
+draw/order. The shared embedding/output parameter stays in the root FSDP group.
+LR, weight decay 0.1, global batch, 192-step warmup, final 10% WSD decay, one-epoch
+budget, data, and context scaling retain their existing experiment settings.
+
+The recipe is included in the run fingerprint and passed to training, conversion,
+and evaluation. `train.py` checks the live optimizer, FSDP precision policies,
+tied parameter, and hyperparameters after checkpoint loading, and writes
+`resolved_training_config.json` plus `TRAINING_RECIPE_VERIFIED` evidence before
+updates. Actual eight-GPU memory fit still requires `RUNTIME_BATCH_VERIFIED`.
+
+Historical campaign nodes without an explicit recipe are pinned to
+`--training-recipe legacy-adamw-v1` at submission, preserving their fingerprints,
+AdamW/DDP/BF16-autocast behavior, initialization, and health policies. Their holds
+and receipts are unchanged. Existing checkpoints require their original recipe;
+an AdamW/DDP checkpoint cannot resume as SkipStepAdamW/FSDP. New EMO experiments
+in a campaign must explicitly carry `--training-recipe emo-dense-v1` on all stages.
+This code change does not authorize or launch experiments.
 The pipeline option `--embedding-weight-decay 0` disables decay only on the tied
 embedding/output matrix while preserving ordinary `--weight-decay`. The default
 applies the same decay to both. EmbedWD is a run hyperparameter, displayed beside
 LR, WD, and BS in the existing pool/model/vocabulary report groups.
 
-The campaign also audits the full W&B `train/CE loss` history, including earlier
+For historical recipes, the campaign audits the full W&B `train/CE loss` history, including earlier
 attempts of resumed runs. After warmup plus 100 steps, a loss at least 1.5 times the
 preceding 100-observation median and at least 1 CE higher is flagged for review.
 Five adjacent optimizer steps meeting both thresholds automatically mark the run

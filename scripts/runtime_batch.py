@@ -42,8 +42,9 @@ def make_plan(config, model_size, vocab_size, devices):
     if len(families) != 1:
         raise ValueError('Mixed GPU types within one training allocation are unsupported')
     family = families.pop()
-    # The 80GB devices retain the measured H100 recipe. Start conservatively on
-    # 48GB L40S devices, especially for the larger embedding/output matrices.
+    # Retain canonical microbatches on 80GB devices and start conservatively on
+    # 48GB L40S. A changed recipe (including FSDP) needs new runtime memory evidence;
+    # historical DDP memory measurements do not verify its fit.
     cap = canonical_micro
     if family == 'L40S':
         cap = {'small': 8, 'medium': 4, 'medium_large': 1 if vocab_size >= 128000 else 2}[model_size]

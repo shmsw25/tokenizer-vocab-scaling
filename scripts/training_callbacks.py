@@ -56,6 +56,11 @@ class ReportMetricsCallback(Callback):
             return
         changed = False
         for name, value in metrics.items():
+            if name in ('optim/step skipped', 'train/Z loss') and math.isfinite(float(value)):
+                if step >= self.latest.get('recipe_metrics_step', 0):
+                    self.latest.update({name: float(value), 'recipe_metrics_step': step})
+                    changed = True
+                continue
             if name == 'train/CE loss':
                 label, ratio = 'train', self.train_tokens_per_byte
             elif name.startswith('eval/') and name.endswith('/validation/CE loss'):

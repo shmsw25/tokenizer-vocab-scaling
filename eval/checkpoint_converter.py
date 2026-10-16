@@ -29,7 +29,7 @@ def convert(checkpoint, output_root):
     # Limit conversion to the architecture used by these training runs.
     supported = {'d_model', 'n_layers', 'n_heads', 'hidden_size_multiplier',
                  'block_name', 'qk_norm', 'rope_theta', 'layer_norm_eps',
-                 'n_kv_heads', 'tie_word_embeddings', 'init_std'}
+                 'n_kv_heads', 'tie_word_embeddings', 'init_std', 'init_tied_output'}
     model_options = cfg['model']
     olmo2 = (model_options.get('block_name') == 'reordered_norm'
              and model_options.get('qk_norm') is True)

@@ -9,6 +9,7 @@ from pathlib import Path
 from pipeline import DEFAULT_BATCH_SIZE, EVALS, REPO
 from adaptive_study import excluded_run
 from loss_curve_health import invalid_result
+from training_recipe import configure_recipe, node_recipe
 
 MODEL_ORDER = ['small', 'medium', 'medium_large']
 COLORS = {32000: '#2563eb', 64000: '#8b5cf6', 128000: '#dc681e'}
@@ -47,6 +48,7 @@ def run_config(node):
         cfg['training'][key] = cast(argument(node, '--' + key.replace('_', '-'), cfg['training'][key]))
     cfg['training']['embedding_weight_decay'] = float(argument(node, '--embedding-weight-decay',
         cfg['training'].get('embedding_weight_decay', cfg['training']['weight_decay'])))
+    configure_recipe(cfg, node_recipe(node))
     return cfg
 
 
@@ -186,6 +188,7 @@ def build_report_data(state, dclm_state=None):
         runtime_batch = node.get('runtime_batch') or node.get('summary', {}).get('training', {}).get('runtime_batch') or {}
         runs.append({'id': key, 'dataset': dataset, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
                      'model': model, 'training_status': training_status,
+                     'training_recipe': node_recipe(node),
                      'status': 'unhealthy' if invalid else 'review' if review_needed and training_status == 'completed' else training_status,
                      'result_valid': not invalid,
                      'loss_curve_review': node.get('loss_curve_review'),
@@ -231,6 +234,7 @@ def build_report_data(state, dclm_state=None):
             # Compare the authorized rates on this pool's validation split only.
             coordinate = f"{group[0]['pool']}:{group[0]['model']}:{group[0]['vocab']}"
             additional = state.get('study', {}).get('small_10gb_lr_descent', {}).get('runs', {}).get(coordinate, [])
+            additional = additional + state.get('study', {}).get('emo_small_10gb', {}).get('runs', [])
             eligible = [r for r in eligible if r['lr'] in pool_search['learning_rates'] or r['id'] in additional]
             chosen_lr = None
         else:

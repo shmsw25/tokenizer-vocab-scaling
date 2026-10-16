@@ -12,6 +12,10 @@ import subprocess
 import sys
 import time
 from decimal import Decimal
+if __package__:
+    from .training_recipe import EMO_RECIPE, RECIPES, configure_recipe
+else:
+    from training_recipe import EMO_RECIPE, RECIPES, configure_recipe
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = '/oe-training-default/sewonm/tokenizer_project'
@@ -71,6 +75,8 @@ def add_stage_arguments(parser, stage):
     if stage == 'validate-model':
         parser.add_argument('--model-directory', type=Path, required=True)
     if stage in MODEL_STAGES:
+        parser.add_argument('--training-recipe', choices=RECIPES, default=EMO_RECIPE,
+                            help='Versioned optimization recipe; legacy-adamw-v1 preserves old runs')
         parser.add_argument('--validation-id', choices=['dolma100m-v1', 'legacy'],
                             default='dolma100m-v1',
                             help='Shared validation by default; legacy only preserves existing run fingerprints')
@@ -93,7 +99,8 @@ def add_stage_arguments(parser, stage):
         parser.add_argument('--decay-horizons', type=float, nargs='+', default=[])
         parser.add_argument('--branch-from', type=Path)
         parser.add_argument('--wandb-project')
-        parser.add_argument('--health-check', action='store_true')
+        parser.add_argument('--health-check', action='store_true',
+                            help='Additional study stop rules for legacy recipes only; EMO skips outlier updates')
         parser.add_argument('--resume-latest', action='store_true',
                             help='Require and restore the latest full-state checkpoint; never start over')
         parser.add_argument('--eval-interval', type=positive_int)
@@ -374,6 +381,7 @@ def training_plan(args):
         validation = validation_metadata(args.root, args.data_size, args.vocab_size,
                                          dataset=getattr(args, 'dataset', 'dolma'))
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
+    configure_recipe(cfg, args.training_recipe)
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
     # The explicit embedding override participates in the scientific fingerprint.
     tags = ('_wt' if cfg['model'].get('tie_word_embeddings', False) else '')
@@ -450,6 +458,7 @@ def train_model(args):
              '--model-size', args.model_size, '--vocab-size', args.vocab_size, '--output', runtime_plan])
         run([sys.executable, '-m', 'torch.distributed.run', '--standalone',
              f'--nproc_per_node={args.gpus}', 'train.py', '--config', config_path,
+             '--training-recipe', args.training_recipe,
              '--data-dir', tokenized_dir(args), '--output-dir', output,
              '--run-name', f'{run_prefix}{args.model_size}_{dataset_name(args)}_{output.name}',
              '--runtime-batch-plan', runtime_plan, *resume_args])

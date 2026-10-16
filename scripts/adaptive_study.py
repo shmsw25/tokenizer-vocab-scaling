@@ -3,6 +3,7 @@ import copy
 import math
 from datetime import datetime, timezone
 from loss_curve_health import invalid_result
+from training_recipe import LEGACY_RECIPE, node_recipe
 
 MODELS = ('small', 'medium', 'medium_large')
 HORIZONS = (.05, .1, .2, .4)
@@ -84,7 +85,8 @@ def model_run(state, pool, model, vocab, lr, *, role, fraction=1., parent=None,
         raise ValueError(f'{model} uses the user-fixed learning rate {fixed_lr}')
     # Reuse any already-submitted scientifically matching one-epoch run.
     for key, node in nodes.items():
-        if (node['stage'] == 'train-model' and node.get('dataset', 'dolma') == 'dolma' and not excluded_run(state, node) and not node.get('legacy_architecture') and node.get('data_size') == pool
+        if (node['stage'] == 'train-model' and node_recipe(node) == LEGACY_RECIPE
+                and node.get('dataset', 'dolma') == 'dolma' and not excluded_run(state, node) and not node.get('legacy_architecture') and node.get('data_size') == pool
                 and node.get('model_size') == model and node.get('vocab_size') == vocab
                 and float(arg(node, '--learning-rate', 0)) == lr
                 and float(arg(node, '--epoch-fraction', 1)) == fraction
@@ -588,7 +590,8 @@ def monitor_wandb(state):
                     metrics = dict(run.summary)
                     node['wandb_observation'] = {'checked_at': now(), 'state': run.state, 'url': run.url,
                         'metrics': {k: v for k, v in metrics.items() if k in
-                            ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/total grad norm', '_step')
+                            ('train/CE loss', 'eval/lm/validation/CE loss', 'optim/total grad norm',
+                             'optim/step skipped', 'train/Z loss', '_step')
                             and isinstance(v, (int, float)) and math.isfinite(v)}}
                 review_node(node, api, cache_dir, now(), current_run=run)
                 try:

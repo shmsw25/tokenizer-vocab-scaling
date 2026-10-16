@@ -6,6 +6,10 @@ import math
 from pathlib import Path
 import re
 import statistics
+if __package__:
+    from .training_recipe import EMO_RECIPE, node_recipe
+else:
+    from training_recipe import EMO_RECIPE, node_recipe
 
 
 POLICY = {
@@ -25,6 +29,10 @@ def invalid_result(node):
         return decision == 'unhealthy'
     if node.get('health_stop', {}).get('classification') == 'unhealthy':
         return True
+    if node_recipe(node) == EMO_RECIPE:
+        # EMO handles anomalous finite updates in the optimizer and continues.
+        # Keep the full histories as diagnostics, without the study's extra stop rules.
+        return False
     return (node.get('loss_curve_review', {}).get('status') == 'unhealthy'
             or node.get('gradient_curve_review', {}).get('status') == 'unhealthy')
 

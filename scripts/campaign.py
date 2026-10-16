@@ -5,6 +5,7 @@ before submission, so a lost response can be recovered without duplicate jobs.
 Failed jobs require explicit --retry-node after their failure is understood.
 """
 import argparse
+from training_recipe import campaign_arguments
 from collections import Counter
 from datetime import datetime, timezone
 import fcntl
@@ -499,7 +500,7 @@ def submit_ready(state, path, max_submissions=None):
         node['submission_error'] = 'Submission in progress or outcome not yet recovered'
         write_json(path, state)
         receipt_path = path.parent / 'receipts' / f'{key}.json'
-        command = [sys.executable, str(REPO / 'scripts/submit.py'), *node['arguments'],
+        command = [sys.executable, str(REPO / 'scripts/submit.py'), *campaign_arguments(node),
                    *placement_arguments(node),
                    '--workspace', state['workspace'], '--name', node['name'],
                    '--receipt', str(receipt_path), '--spec-file', str(path.parent / 'specs' / f'{key}.json')]

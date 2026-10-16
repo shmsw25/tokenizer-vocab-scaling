@@ -34,7 +34,8 @@ if sys.argv[1]==os.environ['FAILURE']:sys.exit(7)
     calls = tmp_path / 'calls.jsonl'
     env = dict(os.environ, CALLS=str(calls), FAILURE=failure, CUDA_VISIBLE_DEVICES='3,4,5,6,7,8,9,10',
                PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
-    arguments = ['--vocab-size', '64000', '--data-size', '5GB', '--batch-size', '128', '--learning-rate', '0.002']
+    arguments = ['--vocab-size', '64000', '--data-size', '5GB', '--batch-size', '128', '--learning-rate', '0.002',
+                 '--training-recipe', 'emo-dense-v1']
     result = subprocess.run(['bash', str(scripts / 'run_model.sh'), 'train-model', *arguments],
                             env=env, capture_output=True, text=True, timeout=15)
     rows = [json.loads(line) for line in calls.read_text().splitlines()]

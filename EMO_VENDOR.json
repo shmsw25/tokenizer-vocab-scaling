@@ -4,8 +4,8 @@
   "patch": "emo_tied_embeddings.patch",
   "license": "EMO/LICENSE",
   "patched_file_sha256": {
-    "src/olmo_core/nn/transformer/config.py": "96360c2995a67e7c56919d6d45aa466cc908c35efdf6ee0a961acb5704de4f43",
-    "src/olmo_core/nn/transformer/model.py": "2d7d6a3519c992ae574aa911f632017c6ce980009fef0353da4c4c5134c9a20a",
+    "src/olmo_core/nn/transformer/config.py": "0919b92d2b60a4aaf3d6b22457c61d01454a84a641a09ae4d331cd467a180076",
+    "src/olmo_core/nn/transformer/model.py": "8f1a0dced1ad44972ab5cbf0fde0d278b1eca9cda984f871a1f6722684e8002f",
     "src/olmo_core/train/callbacks/wandb.py": "d01760d7e7c3f66d7815298d68b18f113bf8821648ee1eb16e89c5ee1f4ab4f0",
     "src/olmo_core/train/train_module/transformer/train_module.py": "e1c418fc0593c637b3beaec14680bd689c69ace589b9b07c19147895bf9c51e2",
     "src/olmo_core/nn/attention/te_attn_api.py": "3809d36e9fd780359efbbd7e989fa095649105e2b73a06646880148278e3b580",
@@ -15,7 +15,8 @@
   },
   "additional_patches": [
     "emo_optional_te.patch",
-    "emo_repack.patch"
+    "emo_repack.patch",
+    "emo_dense_recipe.patch"
   ],
   "repack_source": {
     "repository": "https://github.com/allenai/EMO",
@@ -30,5 +31,23 @@
       "Keep existing incomplete-sequence/global-batch dropping; do not add alignment padding.",
       "Load/validate document spans only for later epochs; validate repack identity on checkpoint resume."
     ]
+  },
+  "dense_recipe_source": {
+    "repository": "https://github.com/allenai/EMO",
+    "branch": "sewonm/icsl",
+    "commit": "6ef92fc3a45896a8d734ea4f852a3d35950e4abb",
+    "recipe": "src/scripts/train/olmo2-1B.py",
+    "patch": "emo_dense_recipe.patch",
+    "adaptations": [
+      "Retain tie_word_embeddings field name and legacy initialization by default.",
+      "emo-dense-v1 explicitly enables upstream final output-head initialization.",
+      "Port tied-weight FSDP ownership and unsupported-parallelism guards."
+    ],
+    "identical_upstream_file_sha256": {
+      "src/olmo_core/optim/adamw.py": "e5f230120fdb01338e1817ae5eb12604b8fc38a1af6f9626988c30d71219b29e",
+      "src/olmo_core/optim/skip_step_optimizer.py": "91ddfd0bb95dc40ec0104a80ef90bf876ceec6ddba1e0f7a2040960ed4b90725",
+      "src/olmo_core/nn/functional/cross_entropy_loss.py": "2c11aca4acbd6d7fe7f724a68318039e33d6423e7a6ff70efd7ec3e3a02e9705",
+      "src/olmo_core/nn/transformer/init.py": "db41412f9395a245d84d4afc0b9dbf9be6277500905a8e7954c456a261f221c7"
+    }
   }
 }

@@ -1,0 +1,96 @@
+diff --git a/src/olmo_core/nn/transformer/config.py b/src/olmo_core/nn/transformer/config.py
+index 3914bac..4cdcb2a 100644
+--- a/src/olmo_core/nn/transformer/config.py
++++ b/src/olmo_core/nn/transformer/config.py
+@@ -333,8 +333,17 @@ class TransformerConfig(ModelConfig):
+     block_overrides: Optional[Dict[int, TransformerBlockConfig]] = None
+     embed_scale: Optional[float] = None
+     tie_word_embeddings: bool = False
++    init_tied_output: bool = False
++    """Initialize the shared matrix again at the LM head, as in EMO sewonm/icsl.
++
++    False preserves initialization of historical tokenizer-study recipes.
++    """
+ 
+     def __post_init__(self):
++        if self.tie_word_embeddings and self.name != TransformerType.default:
++            raise OLMoConfigurationError("tied embeddings require the default transformer")
++        if self.tie_word_embeddings and self.lm_head.name != LMHeadType.default:
++            raise OLMoConfigurationError("tied embeddings require the default LM head")
+         validate_block_resolution_config(
+             n_layers=self.n_layers,
+             block=self.block,
+@@ -386,6 +395,7 @@ class TransformerConfig(ModelConfig):
+                 block_pattern=self.block_pattern,
+                 embed_scale=self.embed_scale,
+                 tie_word_embeddings=self.tie_word_embeddings,
++                init_tied_output=self.init_tied_output,
+             )
+         elif self.name == TransformerType.normalized:
+             assert self.embedding_norm is None
+diff --git a/src/olmo_core/nn/transformer/model.py b/src/olmo_core/nn/transformer/model.py
+index 4347469..bcd2c26 100644
+--- a/src/olmo_core/nn/transformer/model.py
++++ b/src/olmo_core/nn/transformer/model.py
+@@ -124,6 +124,7 @@ class Transformer(nn.Module):
+         block_pattern: Optional[List[str]] = None,
+         embed_scale: Optional[float] = None,
+         tie_word_embeddings: bool = False,
++        init_tied_output: bool = False,
+     ):
+         super().__init__()
+ 
+@@ -168,6 +169,7 @@ class Transformer(nn.Module):
+         )
+ 
+         self.tie_word_embeddings = tie_word_embeddings
++        self.init_tied_output = init_tied_output
+         if tie_word_embeddings:
+             self.lm_head.w_out.weight = self.embeddings.weight
+ 
+@@ -353,7 +355,7 @@ class Transformer(nn.Module):
+                 if max_seq_len is not None and att.rope is not None:
+                     att.rope.warmup_cache(max_seq_len, device)
+ 
+-        if self.lm_head is not None and not self.tie_word_embeddings:
++        if self.lm_head is not None and (not self.tie_word_embeddings or self.init_tied_output):
+             self.init_method.init_final_w_out(
+                 self.lm_head.w_out,
+                 d_model=self.d_model,
+@@ -681,6 +683,8 @@ class Transformer(nn.Module):
+         :param loss_parallel: Set to ``True`` if parallelizing the loss function as well.
+         :param float8_enabled: Set this to ``True`` if training with float8 linear layers.
+         """
++        if self.tie_word_embeddings:
++            raise NotImplementedError("tensor parallelism is not supported with tied embeddings")
+         if float8_enabled is None:
+             float8_enabled = self.fp8_enabled
+         elif not float8_enabled and self.fp8_enabled:
+@@ -878,6 +882,8 @@ class Transformer(nn.Module):
+             in more aggressive prefetching.
+         :wrapping_strategy: The wrapping strategy.
+         """
++        if self.tie_word_embeddings and pp_enabled:
++            raise NotImplementedError("pipeline-parallel FSDP is not supported with tied embeddings")
+         mp_policy = MixedPrecisionPolicy(
+             param_dtype=param_dtype or self.dtype, reduce_dtype=reduce_dtype
+         )
+@@ -896,7 +902,8 @@ class Transformer(nn.Module):
+                 mp_policy=mp_policy,
+             )
+ 
+-        if self.embeddings is not None:
++        # The shared embedding/output parameter belongs to the root FSDP group.
++        if self.embeddings is not None and not self.tie_word_embeddings:
+             fully_shard(
+                 self.embeddings,
+                 reshard_after_forward=reshard_after_forward,
+@@ -908,7 +915,7 @@ class Transformer(nn.Module):
+         if wrapping_strategy != TransformerDataParallelWrappingStrategy.blocks:
+             if self.embedding_norm is not None:
+                 fully_shard(self.embedding_norm, **fsdp_config)
+-            if self.lm_head is not None:
++            if self.lm_head is not None and not self.tie_word_embeddings:
+                 fully_shard(self.lm_head, reshard_after_forward=False, **fsdp_config)
+ 
+         fully_shard(self, reshard_after_forward=reshard_after_forward, **fsdp_config)
