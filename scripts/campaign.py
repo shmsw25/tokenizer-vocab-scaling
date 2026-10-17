@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import fcntl
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -151,13 +152,27 @@ def ready_nodes(state):
             and not node.get('hold_reason') and not excluded_run(state, node) and not invalid_result(node)
             and training_gate_ready(state, node)
             and all(dependency_ready(state, node, dep) for dep in node['dependencies'])]
-    return sorted(ready, key=lambda key: '--resume-latest' not in state['nodes'][key]['arguments'])
+    return sorted(ready, key=lambda key: ('--resume-latest' not in state['nodes'][key]['arguments'],
+                                        state['nodes'][key].get('admission_order', float('inf'))))
 
 
 def training_submission_allowed(state, key):
     """An explicit, exact-recipe exception never releases the general training hold."""
     import hashlib
     node = state['nodes'][key]
+    if node.get('report_cohort') == 'dolma_emo_repfilter_v1' and node['stage'] == 'train-model':
+        from dolma_emo_trials import sources_match
+        if not sources_match(state):
+            return False
+    ceiling = state.get('study', {}).get('maximum_new_learning_rate')
+    if node['stage'] == 'train-model' and ceiling is not None:
+        from adaptive_study import arg
+        try:
+            lr = float(arg(node, '--learning-rate'))
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(lr) or lr > ceiling:
+            return False
     if node['stage'] != 'train-model' or not state.get('study', {}).get('training_submission_hold'):
         return True
     allowed = state['study'].get('training_submission_exceptions', {}).get(key, {})

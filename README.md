@@ -79,6 +79,19 @@ torchrun --standalone --nproc_per_node=8 train.py \
 ```
 
 The config holds model dimensions and experiment LR/WD/batch/schedule settings.
+The current study defaults are **Dolma3 + EMO + RepFilter, LR 5e-4**. Rates above
+5e-4 are blocked for new campaign admissions; lower rates need a separately
+authorized comparison. Historical config defaults and receipts remain intact.
+The fresh comparison explicitly pins every argument on all three stages and
+covers 5GB/10GB × small/medium/medium_large × 32K/64K/128K × EmbedWD 0/0.1 (36 runs).
+Its independent `.build/dolma-emo-report.html` refreshes alongside the preserved
+`.build/report.html`; each completed chained evaluation fills both the result
+grid and the matching pool/EmbedWD plot. The one-time authorization is recorded
+under `study.dolma_emo_repfilter_v1`; do not rerun its migration after it is applied.
+The general training hold remains, with exceptions only for exact authorized
+argument hashes. New 5GB allocations use a 1h scheduler minimum, 10GB uses 3h,
+and all queued/running allocations count against the all-user 100-GPU cap.
+
 Fresh commands default to `--training-recipe emo-dense-v1`, matching the dense
 recipe in EMO `sewonm/icsl` at `6ef92fc3a45896a8d734ea4f852a3d35950e4abb`.
 Vocabulary size and tokenizer come from `--data-dir`.

@@ -136,7 +136,7 @@ def dclm_training_tokens(state):
     return rows
 
 
-def build_report_data(state, dclm_state=None):
+def build_report_data(state, dclm_state=None, report_cohort=None):
     nodes = state['nodes']
     streams = {(n.get('dataset', 'dclm' if n['stage'] == 'tokenize-dclm-data' else 'dolma'),
                 n.get('data_size'), n['vocab_size']): n.get('summary', {}).get('meta', {})
@@ -151,6 +151,8 @@ def build_report_data(state, dclm_state=None):
     parameter_counts = defaultdict(dict)
     for key, node in nodes.items():
         if node['stage'] != 'train-model' or (node['status'] == 'canceled' and not node.get('unhealthy_stop')):
+            continue
+        if node.get('report_cohort') != report_cohort:
             continue
         if excluded_run(state, node) or node.get('study_role') == 'superseded_plan' or node.get('legacy_architecture'):
             continue
@@ -359,3 +361,6 @@ def render_report(state, destination):
     source = source.replace('__REPORT_DATA__', payload).replace('__PLOTLY_JS__', get_plotlyjs())
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(source)
+    if state.get('study', {}).get('dolma_emo_repfilter_v1'):
+        from dolma_emo_report import render_report as render_comparison
+        render_comparison(state, destination.with_name('dolma-emo-report.html'))
