@@ -118,6 +118,9 @@ def dependency_ready(state, node, dependency):
     if invalid_result(prerequisite):
         return False
     if prerequisite['status'] == 'succeeded':
+        if prerequisite.get('stage') == 'prepare-dolma2-comparison':
+            from dolma2_comparison import verify_preparation_receipt
+            return verify_preparation_receipt(state, prerequisite)
         return True
     study = state.get('study', {})
     if (not study.get('validation_overlap', {}).get('enabled')
@@ -226,6 +229,27 @@ def log_progress(lines, stage, total_records=None):
     # message. Select the latest complete update, including after a phase change.
     lines = [{'timestamp': line['timestamp'], 'message': ANSI.sub('', fragment).strip()}
              for line in lines for fragment in re.split(r'[\r\n]+', line['message']) if fragment.strip()]
+    if stage == 'prepare-dolma2-comparison':
+        points = []
+        for line in lines:
+            if line['message'].startswith('DOLMA2_PREPARATION '):
+                total_records = json.loads(line['message'].split(' ', 1)[1])['total_documents']
+            elif line['message'].startswith('TOKENIZATION_PROGRESS '):
+                point = json.loads(line['message'].split(' ', 1)[1])
+                if points and point['documents'] <= points[-1]['documents']: points = []
+                points.append(point)
+            elif line['message'].startswith(('VALIDATION_TOKENS_READY ', 'DOLMA2_PREPARATION_VERIFIED ')):
+                return {'text': 'Training and validation token streams published; verifying and finalizing', 'eta': 'Unknown finalization time'}
+        if points:
+            last = points[-1]
+            eta = None
+            if total_records and len(points) > 1:
+                first = points[max(0, len(points)-4)]
+                if last['documents'] > first['documents']:
+                    eta = max(0, total_records-last['documents']) * (last['time']-first['time']) / (last['documents']-first['documents'])
+            return {'text': f"{last['documents']:,} training documents tokenized", 'documents': last['documents'],
+                    'total_documents': total_records, 'tokenization_eta_seconds': eta,
+                    'eta': f'~{eta/60:.0f} min for tokenization; hashing/validation extra' if eta is not None else 'Unknown; more measurements needed'}
     for line in reversed(lines):
         text = line['message']
         match = re.search(r'\[step=(\d+)/(\d+),epoch=[^,\]]+(?:,eta=([^\]]+))?\]', text)
@@ -352,7 +376,7 @@ def record_native_loss_failure(node, lines):
 JOB_OBSERVATIONS = ('reported_metrics', 'wandb_observation', 'wandb_final_checked',
                     'progress', 'runtime_batch', 'runtime_batch_verified', 'resume_verified',
                     'loss_curve_review', 'gradient_curve_review', 'chain_snapshot',
-                    'repetition_filter_verified')
+                    'repetition_filter_verified', 'tokenizer_source_verified')
 
 
 def record_training_job_change(node, job_id, previous_job):
@@ -466,11 +490,15 @@ def refresh(state, folder):
                                                   ('RUNTIME_BATCH_PLAN ', 'runtime_batch'),
                                                   ('RUNTIME_BATCH_VERIFIED ', 'runtime_batch_verified'),
                                                   ('REPETITION_FILTER_VERIFIED ', 'repetition_filter_verified'),
+                                                  ('TOKENIZER_SOURCE_VERIFIED ', 'tokenizer_source_verified'),
                                                   ('RESUME_VERIFIED ', 'resume_verified')]:
                                 if fragment.startswith(prefix):
                                     node[field] = json.loads(fragment[len(prefix):])
                 pool = state['nodes'].get(f"sample-{size_key(node.get('data_size') or '100GB')}", {})
                 total_records = pool.get('summary', {}).get('pool', {}).get('records')
+                if node['stage'] == 'prepare-dolma2-comparison':
+                    meta = state['nodes']['dclm-tokens-10gb-32000']['summary']['meta']
+                    total_records = sum(meta[s]['documents'] for s in ('train', 'eval'))
                 node['progress'] = log_progress(lines, node['stage'], total_records)
                 if node['status'] == 'queued':
                     node['progress'] = {'text': node['job_status'].get('failedSchedulingMessage', 'Queued'),

@@ -151,6 +151,15 @@ class TrainingRecipeCallback(Callback):
         # Trainer.fit() may auto-restore: verify after that, before any updates.
         groups = verify_live_recipe(self.trainer.train_module, self.config, recipe=self.recipe)
         filter_record = verify_instance_filter(self.dataset, self.config) if self.dataset is not None else None
+        tokenizer_record = None
+        if source := self.config.get('pipeline', {}).get('tokenizer_source'):
+            if (self.dataset is None or self.dataset.vocab_size != 100278
+                    or self.dataset.eos_token_id != 100257 or self.dataset.pad_token_id != 100277
+                    or self.model_config.vocab_size != 100352):
+                raise RuntimeError('Actual Dolma2 tokenizer/model token IDs differ from EMO')
+            tokenizer_record = {'source': source, 'vocab_size': self.dataset.vocab_size,
+                'eos_token_id': self.dataset.eos_token_id, 'pad_token_id': self.dataset.pad_token_id,
+                'padded_vocab_size': self.model_config.vocab_size}
         if get_rank() == 0:
             from scripts.pipeline import write_json
             module = self.trainer.train_module
@@ -168,6 +177,9 @@ class TrainingRecipeCallback(Callback):
             if filter_record is not None:
                 record['repetition_filter'] = filter_record
                 print('REPETITION_FILTER_VERIFIED ' + json.dumps(filter_record), flush=True)
+            if tokenizer_record is not None:
+                record['tokenizer_source'] = tokenizer_record
+                print('TOKENIZER_SOURCE_VERIFIED ' + json.dumps(tokenizer_record), flush=True)
             write_json(self.output_dir / 'resolved_training_config.json', record)
             print('TRAINING_RECIPE_VERIFIED ' + json.dumps(record), flush=True)
 
@@ -278,6 +290,8 @@ def main():
 
     # Recorded in the checkpoint config for conversion and evaluation.
     cfg['eos_token'] = meta['eos_token']
+    if 'pad_token' in meta:
+        cfg['pad_token'] = meta['pad_token']
     cfg['tokenized_dir'] = str(data_dir)
     cfg['tokens_per_byte'] = meta['tokens_per_byte']
     if len(meta['data_files']) == 1:
@@ -309,7 +323,7 @@ def main():
     try:
         torch.set_float32_matmul_precision('highest' if recipe == EMO_RECIPE else 'high')
         tokenizer = TokenizerConfig(vocab_size=meta['vocab_size'], eos_token_id=meta['eos_token_id'],
-                                    pad_token_id=meta['eos_token_id'])
+                                    pad_token_id=meta.get('pad_token_id', meta['eos_token_id']))
         model_cfg = TransformerConfig.llama_like(
             vocab_size=tokenizer.padded_vocab_size(),
             attn_backend=AttentionBackendName.torch, **cfg['model'])

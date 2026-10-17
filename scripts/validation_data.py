@@ -131,21 +131,35 @@ def prepare_corpus(root, *, target_tokens=TARGET_TOKENS, seed=SEED, candidate_co
         return info
 
 
-def tokenize_validation(root, pool, vocab, dataset='dolma'):
+def tokenizer_stream_paths(root, pool, vocab, dataset, tokenizer_source='pool'):
+    if dataset not in ('dolma', 'dclm'): raise ValueError('Unknown tokenizer dataset')
+    if tokenizer_source == 'dolma2':
+        from dolma2_comparison import tokenizer_path, source_manifest
+        if (dataset, pool, vocab) != ('dclm', '10GB', 100278):
+            raise ValueError('Dolma2 validation coordinate mismatch')
+        return (tokenizer_path(root), validation_root(root) / 'tokenized_dclm' / 'dolma2_10GB_100278',
+                {'tokenizer_source': source_manifest()})
+    if tokenizer_source != 'pool': raise ValueError('Unknown tokenizer source')
+    suffix = '_dclm' if dataset == 'dclm' else ''
+    return (root / f'tokenizers{suffix}' / f'default_{pool}_{vocab}' / 'tokenizer.json',
+            validation_root(root) / f'tokenized{suffix}' / f'default_{pool}_{vocab}', {})
+
+
+def tokenize_validation(root, pool, vocab, dataset='dolma', tokenizer_source='pool'):
     from tokenizers import Tokenizer
     import numpy as np
     root = Path(root);folder = validation_root(root)
     source = read_json(folder / 'manifest.json')
     raw = folder / 'documents.jsonl'
-    if dataset not in ('dolma', 'dclm'): raise ValueError('Unknown tokenizer dataset')
-    suffix = '_dclm' if dataset == 'dclm' else ''
-    tokenizer_path = root / f'tokenizers{suffix}' / f'default_{pool}_{vocab}' / 'tokenizer.json'
-    target = folder / f'tokenized{suffix}' / f'default_{pool}_{vocab}'
+    tokenizer_path, target, extra = tokenizer_stream_paths(root, pool, vocab, dataset, tokenizer_source)
     marker = target / 'meta.json'
     recipe = dict(validation_id=VERSION, documents_sha256=source['sha256'],
-                  tokenizer_sha256=digest(tokenizer_path), pool=pool, vocab_size=vocab)
+                  tokenizer_sha256=digest(tokenizer_path), pool=pool, vocab_size=vocab, **extra)
     if dataset == 'dclm': recipe['tokenizer_dataset'] = dataset
-    with lock(root, f'validation-tokens{suffix}-{pool}-{vocab}'):
+    suffix = '_dclm' if dataset == 'dclm' else ''
+    lock_name = (f'validation-tokens{suffix}-{pool}-{vocab}' if tokenizer_source == 'pool'
+                 else f'validation-tokens-{tokenizer_source}-{pool}-{vocab}')
+    with lock(root, lock_name):
         if marker.exists():
             meta = read_json(marker)
             if meta['recipe'] != recipe or (target/'eval.bin').stat().st_size != meta['tokens']*4 or digest(target/'eval.bin') != meta['sha256']:
@@ -186,17 +200,14 @@ def prepare_validation(args):
         for vocab in (32000,64000,128000):tokenize_validation(args.root,pool,vocab)
 
 
-def validation_metadata(root, pool, vocab, dataset='dolma'):
+def validation_metadata(root, pool, vocab, dataset='dolma', tokenizer_source='pool'):
     """GPU jobs consume only an already-published CPU-prepared stream."""
     root=Path(root);folder=validation_root(root)
     manifest=read_json(folder/'manifest.json')
-    if dataset not in ('dolma', 'dclm'): raise ValueError('Unknown tokenizer dataset')
-    suffix = '_dclm' if dataset == 'dclm' else ''
-    target=folder/f'tokenized{suffix}'/f'default_{pool}_{vocab}'
+    tokenizer, target, extra = tokenizer_stream_paths(root, pool, vocab, dataset, tokenizer_source)
     meta=read_json(target/'meta.json')
-    tokenizer=root/f'tokenizers{suffix}'/f'default_{pool}_{vocab}'/'tokenizer.json'
     expected=dict(validation_id=VERSION,documents_sha256=manifest['sha256'],
-        tokenizer_sha256=digest(tokenizer),pool=pool,vocab_size=vocab)
+        tokenizer_sha256=digest(tokenizer),pool=pool,vocab_size=vocab, **extra)
     if dataset == 'dclm': expected['tokenizer_dataset'] = dataset
     if meta['recipe']!=expected or meta['bytes']!=manifest['text_bytes'] or meta['documents']!=manifest['documents']:
         raise ValueError('Validation stream corpus/tokenizer identity mismatch')

@@ -653,3 +653,28 @@ extension, not a recurring command. It preserves the global training hold and
 creates exact-argument exceptions for these three roots only. Routine monitoring
 continues through `campaign.py --advance`; chains share the training allocation,
 and no DCLM LR fallback or additional model experiment is authorized.
+
+### Original EMO Dolma2 tokenizer comparison
+
+The explicitly authorized pair uses `--tokenizer-source dolma2` with DCLM
+10GB, the small model, and `emo-dense-v1`: one unfiltered run and one
+`--repetition-filter emo-v1` run. Both use LR `5e-4`, WD/EmbedWD `0.1`, batch
+128, seed 42, one epoch, and a one-hour scheduling reservation. Context length
+uses the existing measured tokens-per-byte scaling against DCLM 10GB/32K.
+
+`data/dolma2_tokenizer.json` pins the original EMO `allenai/dolma2-tokenizer`
+revision and file hashes. Its 100,278-token vocabulary, EOS 100257, and PAD
+100277 are retained, with model vocabulary padded to 100352. The shared CPU
+`prepare-dolma2-comparison` prerequisite verifies those files, encodes the
+existing DCLM pool with the unchanged split and EOS-per-document rule, and
+encodes the same `dolma100m-v1` validation documents. Separate namespaces and
+fingerprints preserve all existing artifacts. GPU admission requires the
+current preparation worker identity, frozen source receipts, and matching
+document/hash evidence. `TOKENIZER_SOURCE_VERIFIED` checks the actual dataset
+and model token IDs at training startup.
+
+`dolma2_comparison.authorize_two_runs` is a one-time in-place extension, never
+a recurring monitor action. It adds exactly two argument-hash exceptions to
+the existing training hold, plus their shared CPU prerequisite and chained
+evaluations. Routine `campaign.py --advance` uses the existing all-user GPU
+cap and three-cluster placement; no other held run is released.

@@ -86,7 +86,12 @@ def score_validation(args):
     if converted['conversion']['source_checkpoint'] != training['checkpoint']:
         raise ValueError('Converted checkpoint differs from completed training')
     exported = Path(converted['exported'])
-    meta = validation_metadata(args.root, args.data_size, args.vocab_size, dataset=dataset)
+    tokenizer_source = getattr(args, 'tokenizer_source', 'pool')
+    trained_source = training['config'].get('pipeline', {}).get('tokenizer_source')
+    if bool(trained_source) != (tokenizer_source == 'dolma2'):
+        raise ValueError('Validation tokenizer source does not match the trained model')
+    meta = validation_metadata(args.root, args.data_size, args.vocab_size, dataset=dataset,
+                               tokenizer_source=tokenizer_source)
     if digest(directory/'tokenizer.json') != meta['recipe']['tokenizer_sha256']:
         raise ValueError('Model tokenizer differs from shared-validation tokenizer')
     output = directory/f'validation_{VERSION}.json'

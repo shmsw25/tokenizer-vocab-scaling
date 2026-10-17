@@ -16,7 +16,8 @@ def args_for(stage, *extra):
     return submit.parser().parse_args([stage, *extra])
 
 
-@pytest.mark.parametrize('stage', [s for s in pipeline.STAGES if s not in pipeline.DCLM_STAGES])
+@pytest.mark.parametrize('stage', [s for s in pipeline.STAGES
+                                 if s not in (*pipeline.DCLM_STAGES, 'prepare-dolma2-comparison')])
 def test_beaker_resources_and_schema(stage):
     extra = ([] if stage in ('download-data','prepare-validation') else ['--data-size', '2.5GB']
              if stage == 'sample-pool' else ['--vocab-size', '48000'])

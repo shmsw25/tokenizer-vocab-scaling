@@ -140,7 +140,7 @@ def build_report_data(state, dclm_state=None):
     nodes = state['nodes']
     streams = {(n.get('dataset', 'dclm' if n['stage'] == 'tokenize-dclm-data' else 'dolma'),
                 n.get('data_size'), n['vocab_size']): n.get('summary', {}).get('meta', {})
-               for n in nodes.values() if n['stage'] in ('tokenize-data', 'tokenize-dclm-data') and n['status'] == 'succeeded'}
+               for n in nodes.values() if n['stage'] in ('tokenize-data', 'tokenize-dclm-data', 'prepare-dolma2-comparison') and n['status'] == 'succeeded'}
     counts = []
     for pool in state.get('pool_sizes', ['100GB']):
         ns = [n for n in nodes.values() if n['stage'] == 'train-tokenizer' and n.get('data_size', '100GB') == pool]
@@ -189,6 +189,9 @@ def build_report_data(state, dclm_state=None):
             metrics = {name: None for name in metrics}
         runtime_batch = node.get('runtime_batch') or node.get('summary', {}).get('training', {}).get('runtime_batch') or {}
         runs.append({'id': key, 'dataset': dataset, 'pool': pool, 'vocab': vocab, 'vocab_label': vocab_label(vocab),
+                     'tokenizer_source': node.get('tokenizer_source', 'pool'),
+                     'tokenizer_provenance': cfg.get('pipeline', {}).get('tokenizer_source'),
+                     'tokenizer_source_verified': node.get('tokenizer_source_verified'),
                      'model': model, 'training_status': training_status,
                      'training_recipe': node_recipe(node),
                      'repetition_filter': cfg['training'].get('repetition_filter'),
@@ -256,13 +259,20 @@ def build_report_data(state, dclm_state=None):
         for vocab in vocabs}} for pool in pools]
     if dclm_state and dclm_state.get('study', {}).get('tokenization', {}).get('enabled'):
         training_tokens.extend(dclm_training_tokens(dclm_state))
+    token_labels = [vocab_label(v) for v in vocabs]
+    if state.get('study', {}).get('dolma2_dclm_small_10gb'):
+        label = 'Dolma2 (100,278)'
+        token_labels.append(label)
+        for row in training_tokens:
+            if row['dataset'] == 'DCLM' and row['pool'] == '10GB':
+                row['tokens'][label] = streams.get(('dclm', '10GB', 100278), {}).get('train', {}).get('tokens')
     for row in training_tokens:
         baseline = row['tokens'].get('32K')
         row['change_vs_32k_pct'] = {
             label: 100 * (tokens / baseline - 1) if tokens is not None and baseline else None
             for label, tokens in row['tokens'].items()}
     return {'tokenizers': counts, 'runs': runs, 'selected': selected, 'pools': pools,
-            'training_tokens': training_tokens, 'token_vocab_labels': [vocab_label(v) for v in vocabs],
+            'training_tokens': training_tokens, 'token_vocab_labels': token_labels,
             'model_parameters': [{'model': model, 'parameters': {
                 vocab_label(vocab): count for vocab, count in parameter_counts[model].items()}}
                 for model in MODEL_ORDER if model in parameter_counts],

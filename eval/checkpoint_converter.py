@@ -43,7 +43,7 @@ def convert(checkpoint, output_root):
         raise FileNotFoundError(f"Missing saved tokenizer: {tokenizer_path}")
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=str(tokenizer_path), eos_token=cfg['eos_token'],
-        pad_token=cfg['eos_token'], model_max_length=cfg['seq_length'])
+        pad_token=cfg.get('pad_token', cfg['eos_token']), model_max_length=cfg['seq_length'])
     vocab = tokenizer.get_vocab()
     if cfg['eos_token'] not in vocab:
         raise ValueError('EOS token is missing from the saved vocabulary')

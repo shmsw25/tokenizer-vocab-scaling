@@ -1,0 +1,18 @@
+{
+  "repository": "allenai/dolma2-tokenizer",
+  "revision": "5292e5d6c0f40b67cc765fe41bec991cf4345b5c",
+  "files": {
+    "tokenizer.json": {
+      "sha256": "969c214487b744f1457d8a4f2055fd4ad348edff5322d4f21f2906ceb158a636",
+      "bytes": 4237178
+    },
+    "tokenizer_config.json": {
+      "sha256": "f820eb9a838bd1c87cb14ceee85a4d443efad3a380f666befd41ad18b0ac4f76",
+      "bytes": 4510
+    },
+    "special_tokens_map.json": {
+      "sha256": "78afb564e81264029b25f9caf24bda2521d5bdaeff5cd3fdbc01d3da2e8ce2f2",
+      "bytes": 581
+    }
+  }
+}

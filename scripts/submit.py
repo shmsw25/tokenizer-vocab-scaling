@@ -20,6 +20,7 @@ WEKA_CLUSTERS_PLACEHOLDER = 'ACCESSIBLE_WEKA_CLUSTERS_RESOLVED_AT_SUBMISSION'
 VALIDATION_CLUSTERS = GPU_CLUSTERS
 VALIDATION_GPU_TYPES = GPU_TYPES
 RESOURCES = {
+    'prepare-dolma2-comparison': (16, '64 GiB'),
     'download-dclm': (16, '64 GiB'),
     'sample-dclm': (4, '32 GiB'),
     'train-dclm-tokenizer': (64, '128 GiB'),
@@ -129,6 +130,8 @@ def stage_arguments(args):
         result += ['--vocab-size', str(args.vocab_size), '--data-size', args.data_size]
     if getattr(args, 'dataset', 'dolma') != 'dolma':
         result += ['--dataset', args.dataset]
+    if getattr(args, 'tokenizer_source', 'pool') != 'pool':
+        result += ['--tokenizer-source', args.tokenizer_source]
     if args.stage in MODEL_STAGES:
         for name in ('training_recipe', 'validation_id', 'model_size', 'gpus', 'micro_batch_size', 'batch_size',
                      'learning_rate', 'weight_decay', 'embedding_weight_decay', 'epochs', 'seed', 'max_steps',

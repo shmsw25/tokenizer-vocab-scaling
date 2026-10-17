@@ -31,7 +31,7 @@ DCLM_STAGES = ('download-dclm', 'sample-dclm', 'train-dclm-tokenizer', 'tokenize
 RAW_STAGES = ('download-data', 'sample-pool', 'prepare-validation', 'download-dclm', 'sample-dclm')
 POOL_SIZES = ('2.5GB', '5GB', '10GB', '20GB', '40GB', '80GB')
 TRAINING_POOLS = ('5GB', '10GB', '20GB')
-STAGES = (*RAW_STAGES, 'train-tokenizer', 'train-dclm-tokenizer', 'tokenize-dclm-data', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
+STAGES = (*RAW_STAGES, 'prepare-dolma2-comparison', 'train-tokenizer', 'train-dclm-tokenizer', 'tokenize-dclm-data', 'tokenize-data', 'tokenize-validation', *MODEL_STAGES, 'validate-model')
 EVALS = ('blimp', 'arc_easy', 'hellaswag', 'piqa', 'dolma_bpb')
 
 
@@ -60,9 +60,11 @@ def data_size(value):
 
 def add_stage_arguments(parser, stage):
     parser.add_argument('--root', type=Path, default=Path(DEFAULT_ROOT))
-    if stage in (*MODEL_STAGES, 'tokenize-validation', 'validate-model'):
+    if stage in (*MODEL_STAGES, 'tokenize-validation', 'validate-model', 'prepare-dolma2-comparison'):
         parser.add_argument('--dataset', choices=['dolma', 'dclm'], default='dolma',
                             help='Training corpus and tokenizer namespace; validation remains dolma100m-v1')
+        parser.add_argument('--tokenizer-source', choices=['pool', 'dolma2'], default='pool',
+                            help='Use the pool tokenizer or the pinned original EMO Dolma2 tokenizer')
     if stage in ('download-dclm', 'sample-dclm'):
         if stage == 'download-dclm':
             parser.add_argument('--workers', type=positive_int, default=8)
@@ -115,6 +117,13 @@ def add_stage_arguments(parser, stage):
 def validate_args(args):
     if not args.root.is_absolute():
         raise ValueError('--root must be absolute')
+    if getattr(args, 'tokenizer_source', 'pool') == 'dolma2':
+        if (args.dataset != 'dclm' or args.data_size != '10GB' or args.vocab_size != 100278
+                or (args.stage in MODEL_STAGES and (args.model_size != 'small'
+                    or args.training_recipe != EMO_RECIPE or args.resume_latest or args.branch_from))):
+            raise ValueError('Dolma2 comparison is limited to fresh DCLM 10GB small EMO runs with vocab 100278')
+    if args.stage == 'prepare-dolma2-comparison' and args.tokenizer_source != 'dolma2':
+        raise ValueError('Dolma2 preparation requires --tokenizer-source dolma2')
     if args.stage in ('download-data', 'prepare-validation', 'download-dclm', 'sample-dclm'):
         return
     if args.stage in ('train-dclm-tokenizer', 'tokenize-dclm-data') and (args.data_size not in TRAINING_POOLS or args.vocab_size not in (32000, 64000, 128000)):
@@ -148,6 +157,8 @@ def validate_args(args):
 
 
 def dataset_name(args, vocab=None):
+    if vocab is None and getattr(args, 'tokenizer_source', 'pool') == 'dolma2':
+        return f'dolma2_{args.data_size}_{args.vocab_size}'
     return f'default_{args.data_size}_{args.vocab_size if vocab is None else vocab}'
 
 
@@ -165,6 +176,9 @@ def raw_file(args):
 
 
 def tokenizer_file(args):
+    if getattr(args, 'tokenizer_source', 'pool') == 'dolma2':
+        from dolma2_comparison import tokenizer_path
+        return tokenizer_path(args.root)
     folder = 'tokenizers_dclm' if getattr(args, 'dataset', 'dolma') == 'dclm' else 'tokenizers'
     return args.root / folder / dataset_name(args) / 'tokenizer.json'
 
@@ -309,6 +323,10 @@ def training_plan(args):
                 raise ValueError(f'Target and 32k reference differ in {split}.{key}')
     for directory in dict.fromkeys((data, reference)):
         provenance = read_json(directory / 'pipeline.json')
+        if directory == data and getattr(args, 'tokenizer_source', 'pool') == 'dolma2':
+            from dolma2_comparison import verify_training_stream
+            verify_training_stream(args.root)
+            continue
         if getattr(args, 'dataset', 'dolma') == 'dclm':
             from dclm_data import verify_token_stream
             vocab = args.vocab_size if directory == data else REFERENCE_VOCAB
@@ -380,10 +398,14 @@ def training_plan(args):
         cfg['pipeline']['pool'] = pool
     if getattr(args, 'dataset', 'dolma') == 'dclm':
         cfg['pipeline']['dataset'] = 'dclm'
+    if getattr(args, 'tokenizer_source', 'pool') == 'dolma2':
+        from dolma2_comparison import source_manifest
+        cfg['pipeline']['tokenizer_source'] = source_manifest()
     if getattr(args, 'validation_id', None) not in (None, 'legacy'):
         from validation_data import validation_metadata
         validation = validation_metadata(args.root, args.data_size, args.vocab_size,
-                                         dataset=getattr(args, 'dataset', 'dolma'))
+                                         dataset=getattr(args, 'dataset', 'dolma'),
+                                         tokenizer_source=getattr(args, 'tokenizer_source', 'pool'))
         cfg['validation'] = {'id': args.validation_id, 'meta': validation}
     configure_recipe(cfg, args.training_recipe)
     configure_repetition_filter(cfg, args.repetition_filter)
@@ -546,7 +568,8 @@ def evaluate_model(args):
                 from score_validation import score_validation, replace_dolma_result
                 shared = score_validation(SimpleNamespace(root=args.root, data_size=args.data_size,
                     vocab_size=args.vocab_size, model_directory=output,
-                    dataset=getattr(args, 'dataset', 'dolma')))
+                    dataset=getattr(args, 'dataset', 'dolma'),
+                    tokenizer_source=getattr(args, 'tokenizer_source', 'pool')))
                 metrics[name] = replace_dolma_result(output, shared)
                 continue
             result = directory / f'{name}.json'
@@ -569,7 +592,10 @@ def evaluate_model(args):
 def publish_summary(args):
     """Expose small manifests through Beaker results; large artifacts stay on Weka."""
     summary = {'stage': args.stage, 'revision': os.environ.get('TOKENIZER_CODE_REVISION', 'local')}
-    if args.stage in DCLM_STAGES:
+    if args.stage == 'prepare-dolma2-comparison':
+        from dolma2_comparison import preparation_summary
+        summary.update(preparation_summary(args.root))
+    elif args.stage in DCLM_STAGES:
         from dclm_data import summary as dclm_summary
         summary_data = dclm_summary(args)
         summary.update(summary_data)
@@ -590,7 +616,8 @@ def publish_summary(args):
     elif args.stage == 'tokenize-validation':
         from validation_data import validation_metadata
         summary['validation'] = validation_metadata(args.root, args.data_size, args.vocab_size,
-                                                     dataset=getattr(args, 'dataset', 'dolma'))
+                                                     dataset=getattr(args, 'dataset', 'dolma'),
+                                                     tokenizer_source=getattr(args, 'tokenizer_source', 'pool'))
     elif args.stage == 'tokenize-data':
         summary['meta'] = completed_meta(tokenized_dir(args), args.vocab_size)
     else:
@@ -637,6 +664,11 @@ def main():
     args = parser.parse_args()
     validate_args(args)
     args.root.mkdir(parents=True, exist_ok=True)
+    if args.stage == 'prepare-dolma2-comparison':
+        from dolma2_comparison import prepare
+        prepare(args.root)
+        publish_summary(args)
+        return
     if args.stage in DCLM_STAGES:
         from dclm_data import run_stage
         run_stage(args)
@@ -644,7 +676,7 @@ def main():
         return
     from validation_data import prepare_validation, tokenize_validation
     from score_validation import score_validation
-    {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size, dataset=a.dataset), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
+    {'tokenize-validation': lambda a: tokenize_validation(a.root, a.data_size, a.vocab_size, dataset=a.dataset, tokenizer_source=a.tokenizer_source), 'validate-model': score_validation, 'prepare-validation': prepare_validation, 'download-data': download_data, 'sample-pool': sample_pool, 'train-tokenizer': train_tokenizer,
      'tokenize-data': tokenize_data, 'train-model': train_model,
      'convert-model': convert_model, 'evaluate-model': evaluate_model}[args.stage](args)
     publish_summary(args)

@@ -438,10 +438,10 @@ def tokenized_path(root, pool, vocab):
     return Path(root) / 'tokenized_data_dclm' / f'default_{pool}_{vocab}'
 
 
-def verify_token_stream(directory, pool_info, vocab, tokenizer_sha):
+def verify_token_stream(directory, pool_info, vocab, tokenizer_sha, eos_token_id=0):
     from pipeline import completed_meta
     meta = completed_meta(directory, vocab)
-    if (meta['seed'] != 42 or meta['eval_fraction'] != .01 or meta['eos_token_id'] != 0
+    if (meta['seed'] != 42 or meta['eval_fraction'] != .01 or meta['eos_token_id'] != eos_token_id
             or meta['data_files'] != [pool_info['output_path']]
             or sum(meta[s]['documents'] for s in ('train', 'eval')) != pool_info['records']
             or sum(meta[s]['bytes'] for s in ('train', 'eval')) != pool_info['text_bytes']

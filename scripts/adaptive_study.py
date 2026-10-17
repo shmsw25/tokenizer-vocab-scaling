@@ -652,6 +652,9 @@ def sync_shared_validation(state):
             nodes[vk]['dataset'] = 'dclm'
             nodes[vk]['arguments'] += ['--dataset', 'dclm']
             nodes[vk]['dependencies'].append(n['validation_stream_node'])
+        if n.get('tokenizer_source') == 'dolma2':
+            nodes[vk]['tokenizer_source'] = 'dolma2'
+            nodes[vk]['arguments'] += ['--tokenizer-source', 'dolma2']
         required.append(vk)
     study['shared_validation_nodes']=required
     backfill = study.get('validation_backfill')
